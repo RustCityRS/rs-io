@@ -4,7 +4,7 @@ const TABLE: [char; 32] = [
 ];
 
 #[inline(always)]
-pub const fn encode(cp: u32) -> u8 {
+pub(crate) const fn encode(cp: u32) -> u8 {
     match cp {
         0x01..=0x7F | 0xA0..=0xFF => cp as u8,
         0x20AC => 128, // €
@@ -34,12 +34,12 @@ pub const fn encode(cp: u32) -> u8 {
         0x0153 => 156, // œ
         0x017E => 158, // ž
         0x0178 => 159, // Ÿ
-        _ => 0,
+        _ => b'?',
     }
 }
 
 #[inline(always)]
-pub fn decode(src: &[u8], offset: usize, len: usize) -> String {
+pub(crate) fn decode(src: &[u8], offset: usize, len: usize) -> String {
     let slice = unsafe { core::slice::from_raw_parts(src.as_ptr().add(offset), len) };
     if slice.iter().all(|&b| b > 0 && b < 128) {
         return unsafe { String::from_utf8_unchecked(slice.to_vec()) };
