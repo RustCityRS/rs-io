@@ -1,0 +1,20 @@
+[package]
+name = "rs-io"
+version = "0.1.0"
+edition = "2024"
+authors = ["RustCityRS"]
+description = "Protocol I/O, Jag, CRC & Compression"
+license = "MIT"
+repository = "https://github.com/RustCityRS/rs-io"
+homepage = "https://github.com/RustCityRS/rs-io"
+readme = "README.md"
+include = ["src/**/*", "csrc/**/*", "build.rs", "LICENSE.md", "README.md"]
+
+[build-dependencies]
+cc = "1.2"
+
+[dependencies]
+rs-crypto = "0.1"
+num-bigint = "0.4"
+
+[dev-dependencies]
