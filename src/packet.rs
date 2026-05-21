@@ -134,6 +134,87 @@ impl Packet {
         self.pos += 8;
     }
 
+    // ── ALT byte writes ──────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn p1_alt1(&mut self, value: u8) {
+        unsafe { *self.data.as_mut_ptr().add(self.pos) = (-(value as i8)) as u8 }
+        self.pos += 1;
+    }
+
+    #[inline(always)]
+    pub const fn p1_alt2(&mut self, value: u8) {
+        unsafe { *self.data.as_mut_ptr().add(self.pos) = 128u8.wrapping_sub(value) }
+        self.pos += 1;
+    }
+
+    #[inline(always)]
+    pub const fn p1_alt3(&mut self, value: u8) {
+        unsafe { *self.data.as_mut_ptr().add(self.pos) = value.wrapping_add(128) }
+        self.pos += 1;
+    }
+
+    // ── ALT u16 writes ─────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn p2_alt1(&mut self, value: u16) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value >> 8) as u8 };
+        unsafe { *ptr.add(1) = (value as u8).wrapping_add(128) };
+        self.pos += 2;
+    }
+
+    #[inline(always)]
+    pub const fn ip2_alt1(&mut self, value: u16) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value as u8).wrapping_add(128) };
+        unsafe { *ptr.add(1) = (value >> 8) as u8 };
+        self.pos += 2;
+    }
+
+    // ── ALT 24-bit / 32-bit writes ────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn p3_alt2(&mut self, value: u32) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value >> 16) as u8 };
+        unsafe { *ptr.add(1) = value as u8 };
+        unsafe { *ptr.add(2) = (value >> 8) as u8 };
+        self.pos += 3;
+    }
+
+    #[inline(always)]
+    pub const fn p4_alt1(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value >> 16) as u8 };
+        unsafe { *ptr.add(1) = (value >> 24) as u8 };
+        unsafe { *ptr.add(2) = value as u8 };
+        unsafe { *ptr.add(3) = (value >> 8) as u8 };
+        self.pos += 4;
+    }
+
+    #[inline(always)]
+    pub const fn p4_alt2(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value >> 8) as u8 };
+        unsafe { *ptr.add(1) = value as u8 };
+        unsafe { *ptr.add(2) = (value >> 24) as u8 };
+        unsafe { *ptr.add(3) = (value >> 16) as u8 };
+        self.pos += 4;
+    }
+
+    #[inline(always)]
+    pub const fn p4_alt3(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        unsafe { *ptr = (value >> 16) as u8 };
+        unsafe { *ptr.add(1) = (value >> 24) as u8 };
+        unsafe { *ptr.add(2) = value as u8 };
+        unsafe { *ptr.add(3) = (value >> 8) as u8 };
+        self.pos += 4;
+    }
+
+    // ── String/Data writes ──────────────────────────────────────────────
+
     #[inline(always)]
     pub const fn pjstr(&mut self, str: &str, terminator: u8) {
         let bytes = str.as_bytes();
@@ -208,6 +289,15 @@ impl Packet {
     }
 
     #[inline(always)]
+    pub const fn ig2(&mut self) -> u16 {
+        let val = u16::from_le(unsafe {
+            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const u16)
+        });
+        self.pos += 2;
+        val
+    }
+
+    #[inline(always)]
     pub const fn ig2s(&mut self) -> i16 {
         let val = i16::from_le(unsafe {
             core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i16)
@@ -255,6 +345,70 @@ impl Packet {
         self.pos += 8;
         val
     }
+
+    // ── ALT byte reads ───────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn g1_alt1(&mut self) -> u8 {
+        self.pos += 1;
+        (-(unsafe { *self.data.as_ptr().add(self.pos - 1) } as i8)) as u8
+    }
+
+    #[inline(always)]
+    pub const fn g1_alt2(&mut self) -> u8 {
+        self.pos += 1;
+        (128u8).wrapping_sub(unsafe { *self.data.as_ptr().add(self.pos - 1) })
+    }
+
+    #[inline(always)]
+    pub const fn g1_alt3(&mut self) -> u8 {
+        self.pos += 1;
+        (unsafe { *self.data.as_ptr().add(self.pos - 1) }).wrapping_sub(128)
+    }
+
+    // ── ALT u16 reads ──────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn g2_alt1(&mut self) -> u16 {
+        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
+        let hi = unsafe { *ptr } as u16;
+        let lo = (unsafe { *ptr.add(1) }).wrapping_sub(128) as u16;
+        self.pos += 2;
+        (hi << 8) | lo
+    }
+
+    #[inline(always)]
+    pub const fn ig2_alt1(&mut self) -> u16 {
+        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
+        let lo = (unsafe { *ptr }).wrapping_sub(128) as u16;
+        let hi = unsafe { *ptr.add(1) } as u16;
+        self.pos += 2;
+        (hi << 8) | lo
+    }
+
+    // ── ALT 32-bit reads ─────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub const fn g4_alt1(&mut self) -> i32 {
+        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
+        self.pos += 4;
+        ((unsafe { *ptr } as i32) << 16)
+            | ((unsafe { *ptr.add(1) } as i32) << 24)
+            | (unsafe { *ptr.add(2) } as i32)
+            | ((unsafe { *ptr.add(3) } as i32) << 8)
+    }
+
+    #[inline(always)]
+    pub const fn g4_alt2(&mut self) -> i32 {
+        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
+        self.pos += 4;
+        ((unsafe { *ptr } as i32) << 8)
+            | (unsafe { *ptr.add(1) } as i32)
+            | ((unsafe { *ptr.add(2) } as i32) << 24)
+            | ((unsafe { *ptr.add(3) } as i32) << 16)
+    }
+
+    // ── String reads ────────────────────────────────────────────────────
 
     #[inline(always)]
     pub fn gjstr(&mut self, terminator: u8) -> String {
@@ -650,6 +804,54 @@ mod tests {
         let mut dest: Vec<u8> = vec![0u8; 3]; // Create a destination slice with enough space to copy 3 bytes
         packet.gdata(&mut dest, 1, 2); // Copy the first 3 bytes from the internal buffer to `dest`
         assert_eq!(dest, vec![0, 10, 20]); // Verify the correct data was copied
+    }
+
+    #[test]
+    fn test_p1_alt1() {
+        let mut packet = Packet::new(1);
+        packet.p1_alt1(100);
+        packet.pos = 0;
+        assert_eq!(100, packet.g1_alt1());
+    }
+
+    #[test]
+    fn test_p1_alt2() {
+        let mut packet = Packet::new(1);
+        packet.p1_alt2(100);
+        packet.pos = 0;
+        assert_eq!(100, packet.g1_alt2());
+    }
+
+    #[test]
+    fn test_p1_alt3() {
+        let mut packet = Packet::new(1);
+        packet.p1_alt3(100);
+        packet.pos = 0;
+        assert_eq!(100, packet.g1_alt3());
+    }
+
+    #[test]
+    fn test_p2_alt1() {
+        let mut packet = Packet::new(2);
+        packet.p2_alt1(32767);
+        packet.pos = 0;
+        assert_eq!(32767, packet.g2_alt1());
+    }
+
+    #[test]
+    fn test_ip2_alt1() {
+        let mut packet = Packet::new(2);
+        packet.ip2_alt1(32767);
+        packet.pos = 0;
+        assert_eq!(32767, packet.ig2_alt1());
+    }
+
+    #[test]
+    fn test_ig2() {
+        let mut packet = Packet::new(2);
+        packet.ip2(65535);
+        packet.pos = 0;
+        assert_eq!(65535, packet.ig2());
     }
 
     #[test]
