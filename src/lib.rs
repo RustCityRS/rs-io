@@ -1,4 +1,5 @@
 pub mod bz2;
+pub mod cp1252;
 pub mod crc;
 pub mod jag;
 pub mod packet;

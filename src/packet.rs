@@ -1,7 +1,7 @@
+use crate::cp1252::{decode, encode};
 use num_bigint::{BigInt, Sign};
 use rs_crypto::rsa::RsaKey;
 use std::io::Error;
-
 // ── Packet size framing ─────────────────────────────────────────────────────
 
 #[repr(u8)]
@@ -218,10 +218,45 @@ impl Packet {
     #[inline(always)]
     pub const fn pjstr(&mut self, str: &str, terminator: u8) {
         let bytes = str.as_bytes();
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
-        unsafe { *ptr.add(bytes.len()) = terminator };
-        self.pos += bytes.len() + 1;
+        let len = bytes.len();
+        let dst = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        if str.is_ascii() {
+            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len) };
+            unsafe { *dst.add(len) = terminator };
+            self.pos += len + 1;
+        } else {
+            let src = bytes.as_ptr();
+            let mut pos = 0;
+            let mut out = 0;
+            while pos < len {
+                let byte = unsafe { *src.add(pos) };
+                if byte < 0x80 {
+                    unsafe { *dst.add(out) = byte };
+                    pos += 1;
+                } else if byte < 0xE0 {
+                    let cp =
+                        ((byte as u32 & 0x1F) << 6) | (unsafe { *src.add(pos + 1) } as u32 & 0x3F);
+                    unsafe { *dst.add(out) = encode(cp) };
+                    pos += 2;
+                } else if byte < 0xF0 {
+                    let cp = ((byte as u32 & 0x0F) << 12)
+                        | ((unsafe { *src.add(pos + 1) } as u32 & 0x3F) << 6)
+                        | (unsafe { *src.add(pos + 2) } as u32 & 0x3F);
+                    unsafe { *dst.add(out) = encode(cp) };
+                    pos += 3;
+                } else {
+                    let cp = ((byte as u32 & 0x07) << 18)
+                        | ((unsafe { *src.add(pos + 1) } as u32 & 0x3F) << 12)
+                        | ((unsafe { *src.add(pos + 2) } as u32 & 0x3F) << 6)
+                        | (unsafe { *src.add(pos + 3) } as u32 & 0x3F);
+                    unsafe { *dst.add(out) = encode(cp) };
+                    pos += 4;
+                }
+                out += 1;
+            }
+            unsafe { *dst.add(out) = terminator };
+            self.pos += out + 1;
+        }
     }
 
     #[inline(always)]
@@ -412,15 +447,16 @@ impl Packet {
 
     #[inline(always)]
     pub fn gjstr(&mut self, terminator: u8) -> String {
-        let pos: usize = self.pos;
-        let mut length = pos;
-        while unsafe { *self.data.get_unchecked(length) } != terminator {
-            length += 1;
+        let pos = self.pos;
+        while unsafe { *self.data.get_unchecked(self.pos) } != terminator {
+            self.pos += 1;
         }
-        let str: &str =
-            unsafe { std::str::from_utf8_unchecked(self.data.get_unchecked(pos..length)) };
-        self.pos = length + 1;
-        str.to_owned()
+        let len = self.pos - pos;
+        self.pos += 1;
+        if len == 0 {
+            return String::new();
+        }
+        decode(&self.data, pos, len)
     }
 
     #[inline(always)]
