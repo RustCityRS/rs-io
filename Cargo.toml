@@ -10,6 +10,10 @@ homepage = "https://github.com/RustCityRS/rs-io"
 readme = "README.md"
 include = ["src/**/*", "csrc/**/*", "build.rs", "LICENSE.md", "README.md"]
 
+[features]
+default = ["bz-error-handler"]
+bz-error-handler = []
+
 [build-dependencies]
 cc = "1.2"
 
