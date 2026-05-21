@@ -23,6 +23,7 @@ unsafe extern "C" {
 
 const BZ2_HEADER: [u8; 4] = *b"BZh1";
 
+#[allow(dead_code)]
 unsafe extern "C" {
     fn bz_internal_error(errcode: c_int);
 }
