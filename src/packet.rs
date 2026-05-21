@@ -11,6 +11,12 @@ pub enum PacketFrame {
     VarShort = 2,
 }
 
+#[repr(u8)]
+pub enum RsaFrame {
+    Byte,
+    Short,
+}
+
 // ── Packet ──────────────────────────────────────────────────────────────────
 
 #[repr(C)]
@@ -128,87 +134,6 @@ impl Packet {
         self.pos += 8;
     }
 
-    // ── ALT byte writes ──────────────────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn p1_alt1(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = (-(value as i8)) as u8 }
-        self.pos += 1;
-    }
-
-    #[inline(always)]
-    pub const fn p1_alt2(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = (128u8).wrapping_sub(value) }
-        self.pos += 1;
-    }
-
-    #[inline(always)]
-    pub const fn p1_alt3(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = value.wrapping_add(128) }
-        self.pos += 1;
-    }
-
-    // ── ALT u16 writes ─────────────────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn p2_alt1(&mut self, value: u16) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 8) as u8 };
-        unsafe { *ptr.add(1) = (value as u8).wrapping_add(128) };
-        self.pos += 2;
-    }
-
-    #[inline(always)]
-    pub const fn ip2_alt1(&mut self, value: u16) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value as u8).wrapping_add(128) };
-        unsafe { *ptr.add(1) = (value >> 8) as u8 };
-        self.pos += 2;
-    }
-
-    // ── ALT 24-bit / 32-bit writes ────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn p3_alt2(&mut self, value: u32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 16) as u8 };
-        unsafe { *ptr.add(1) = value as u8 };
-        unsafe { *ptr.add(2) = (value >> 8) as u8 };
-        self.pos += 3;
-    }
-
-    #[inline(always)]
-    pub const fn p4_alt1(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 16) as u8 };
-        unsafe { *ptr.add(1) = (value >> 24) as u8 };
-        unsafe { *ptr.add(2) = value as u8 };
-        unsafe { *ptr.add(3) = (value >> 8) as u8 };
-        self.pos += 4;
-    }
-
-    #[inline(always)]
-    pub const fn p4_alt2(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 8) as u8 };
-        unsafe { *ptr.add(1) = value as u8 };
-        unsafe { *ptr.add(2) = (value >> 24) as u8 };
-        unsafe { *ptr.add(3) = (value >> 16) as u8 };
-        self.pos += 4;
-    }
-
-    #[inline(always)]
-    pub const fn p4_alt3(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 16) as u8 };
-        unsafe { *ptr.add(1) = (value >> 24) as u8 };
-        unsafe { *ptr.add(2) = value as u8 };
-        unsafe { *ptr.add(3) = (value >> 8) as u8 };
-        self.pos += 4;
-    }
-
-    // ── String/Data writes ──────────────────────────────────────────────
-
     #[inline(always)]
     pub const fn pjstr(&mut self, str: &str, terminator: u8) {
         let bytes = str.as_bytes();
@@ -291,15 +216,6 @@ impl Packet {
         val
     }
 
-    #[inline(always)]
-    pub const fn ig2(&mut self) -> u16 {
-        let val = u16::from_le(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const u16)
-        });
-        self.pos += 2;
-        val
-    }
-
     // java ints are always signed (java 8 added unsigned)
     #[inline(always)]
     pub const fn g3(&mut self) -> i32 {
@@ -339,70 +255,6 @@ impl Packet {
         self.pos += 8;
         val
     }
-
-    // ── ALT byte reads ───────────────────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn g1_alt1(&mut self) -> u8 {
-        self.pos += 1;
-        (-(unsafe { *self.data.as_ptr().add(self.pos - 1) } as i8)) as u8
-    }
-
-    #[inline(always)]
-    pub const fn g1_alt2(&mut self) -> u8 {
-        self.pos += 1;
-        (128u8).wrapping_sub(unsafe { *self.data.as_ptr().add(self.pos - 1) })
-    }
-
-    #[inline(always)]
-    pub const fn g1_alt3(&mut self) -> u8 {
-        self.pos += 1;
-        (unsafe { *self.data.as_ptr().add(self.pos - 1) }).wrapping_sub(128)
-    }
-
-    // ── ALT u16 reads ──────────────────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn g2_alt1(&mut self) -> u16 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        let hi = unsafe { *ptr } as u16;
-        let lo = (unsafe { *ptr.add(1) }).wrapping_sub(128) as u16;
-        self.pos += 2;
-        (hi << 8) | lo
-    }
-
-    #[inline(always)]
-    pub const fn ig2_alt1(&mut self) -> u16 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        let lo = (unsafe { *ptr }).wrapping_sub(128) as u16;
-        let hi = unsafe { *ptr.add(1) } as u16;
-        self.pos += 2;
-        (hi << 8) | lo
-    }
-
-    // ── ALT 32-bit reads ─────────────────────────────────────────────────
-
-    #[inline(always)]
-    pub const fn g4_alt1(&mut self) -> i32 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        self.pos += 4;
-        ((unsafe { *ptr } as i32) << 16)
-            | ((unsafe { *ptr.add(1) } as i32) << 24)
-            | (unsafe { *ptr.add(2) } as i32)
-            | ((unsafe { *ptr.add(3) } as i32) << 8)
-    }
-
-    #[inline(always)]
-    pub const fn g4_alt2(&mut self) -> i32 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        self.pos += 4;
-        ((unsafe { *ptr } as i32) << 8)
-            | (unsafe { *ptr.add(1) } as i32)
-            | ((unsafe { *ptr.add(2) } as i32) << 24)
-            | ((unsafe { *ptr.add(3) } as i32) << 16)
-    }
-
-    // ── String reads ────────────────────────────────────────────────────
 
     #[inline(always)]
     pub fn gjstr(&mut self, terminator: u8) -> String {
@@ -534,17 +386,23 @@ impl Packet {
         };
     }
 
-    pub fn rsaenc(&mut self, rsa: &'static RsaKey) {
+    pub fn rsaenc(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
         let raw = BigInt::from_bytes_be(Sign::Plus, &self.data[..self.pos]);
         let enc = raw.modpow(&rsa.e, &rsa.n).to_bytes_be().1;
 
         self.pos = 0;
-        self.p1(enc.len() as u8);
+        match frame {
+            RsaFrame::Byte => self.p1(enc.len() as u8),
+            RsaFrame::Short => self.p2(enc.len() as u16),
+        }
         self.pdata(&enc, 0, enc.len());
     }
 
-    pub fn rsadec(&mut self, rsa: &'static RsaKey) {
-        let len = self.g1() as usize;
+    pub fn rsadec(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
+        let len = match frame {
+            RsaFrame::Byte => self.g1() as usize,
+            RsaFrame::Short => self.g2() as usize,
+        };
         let raw = BigInt::from_bytes_be(Sign::Plus, &self.data[self.pos..self.pos + len]);
         self.pos += len;
 
@@ -565,6 +423,7 @@ impl Packet {
 #[cfg(test)]
 mod tests {
     use crate::Packet;
+    use crate::packet::RsaFrame;
     use rs_crypto::rsa::{RsaKey, parse_rsa_key_from_pem};
 
     #[test]
@@ -878,9 +737,9 @@ mod tests {
         let mut packet = Packet::new(65 + 1);
         packet.pjstr("hello", 0);
         packet.pjstr("world", 0);
-        packet.rsaenc(key); // Uses modulus and exponent from the private key to encrypt (client).
+        packet.rsaenc(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
         let mut result = Packet::from(packet.data);
-        result.rsadec(key); // Uses CRT to decrypt (server).
+        result.rsadec(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
         assert_eq!("hello", result.gjstr(0));
         assert_eq!("world", result.gjstr(0));
     }
@@ -903,60 +762,10 @@ mod tests {
         let mut packet = Packet::new(65 + 1);
         packet.pjstr("hello", 0);
         packet.pjstr("world", 0);
-        packet.rsaenc(key); // Uses modulus and exponent from the private key to encrypt (client).
+        packet.rsaenc(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
         let mut result = Packet::from(packet.data);
-        result.rsadec(key); // Uses CRT to decrypt (server).
+        result.rsadec(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
         assert_eq!("hello", result.gjstr(0));
         assert_eq!("world", result.gjstr(0));
-    }
-
-    // ── ALT encoding tests ──────────────────────────────────────────────
-
-    #[test]
-    fn test_p1_alt1() {
-        let mut packet = Packet::new(1);
-        packet.p1_alt1(100);
-        packet.pos = 0;
-        assert_eq!(100, packet.g1_alt1());
-    }
-
-    #[test]
-    fn test_p1_alt2() {
-        let mut packet = Packet::new(1);
-        packet.p1_alt2(100);
-        packet.pos = 0;
-        assert_eq!(100, packet.g1_alt2());
-    }
-
-    #[test]
-    fn test_p1_alt3() {
-        let mut packet = Packet::new(1);
-        packet.p1_alt3(100);
-        packet.pos = 0;
-        assert_eq!(100, packet.g1_alt3());
-    }
-
-    #[test]
-    fn test_p2_alt1() {
-        let mut packet = Packet::new(2);
-        packet.p2_alt1(32767);
-        packet.pos = 0;
-        assert_eq!(32767, packet.g2_alt1());
-    }
-
-    #[test]
-    fn test_ip2_alt1() {
-        let mut packet = Packet::new(2);
-        packet.ip2_alt1(32767);
-        packet.pos = 0;
-        assert_eq!(32767, packet.ig2_alt1());
-    }
-
-    #[test]
-    fn test_ig2() {
-        let mut packet = Packet::new(2);
-        packet.ip2(65535);
-        packet.pos = 0;
-        assert_eq!(65535, packet.ig2());
     }
 }
