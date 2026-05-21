@@ -1,5 +1,6 @@
 fn main() {
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    build
         .files([
             "csrc/blocksort.c",
             "csrc/huffman.c",
@@ -13,6 +14,10 @@ fn main() {
         .include("csrc")
         .define("BZ_NO_STDIO", None)
         .opt_level(3)
-        .warnings(false)
-        .compile("rsio_native");
+        .warnings(false);
+
+    #[cfg(feature = "bz-error-handler")]
+    build.file("csrc/bz_error.c");
+
+    build.compile("rsio_native");
 }
