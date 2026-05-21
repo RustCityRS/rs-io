@@ -260,7 +260,7 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn psmart(&mut self, value: i32) {
+    pub fn psmart1or2(&mut self, value: i32) {
         if (0..128).contains(&value) {
             self.p1(value as u8);
         } else if (0..32768).contains(&value) {
@@ -271,13 +271,27 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn psmarts(&mut self, value: i32) {
+    pub fn psmart1or2s(&mut self, value: i32) {
         if (-64..64).contains(&value) {
             self.p1((value + 64) as u8);
         } else if (-16384..16384).contains(&value) {
             self.p2((value + 49152) as u16);
         } else {
             panic!("Error psmarts out of range: {value}");
+        }
+    }
+
+    #[inline(always)]
+    pub fn psmart2or4(&mut self, value: i32) {
+        if value < -1 {
+            panic!("Error psmart2or4 out of range: {value}");
+        } else if value == -1 {
+            self.p2(32767);
+        } else if value < 32767 {
+            self.p2(value as u16);
+        } else {
+            self.p4(value);
+            self.data[self.pos - 4] |= 0x80;
         }
     }
 
@@ -460,7 +474,7 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gsmart(&mut self) -> i32 {
+    pub fn gsmart1or2(&mut self) -> i32 {
         if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
             self.g1() as i32
         } else {
@@ -469,12 +483,32 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gsmarts(&mut self) -> i32 {
+    pub fn gsmart1or2s(&mut self) -> i32 {
         if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
             self.g1() as i32 - 64
         } else {
             self.g2() as i32 - 49152
         }
+    }
+
+    #[inline(always)]
+    pub fn gsmart2or4(&mut self) -> i32 {
+        if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
+            self.g2() as i32
+        } else {
+            self.g4s() & i32::MAX
+        }
+    }
+
+    #[inline(always)]
+    pub fn gextended1or2(&mut self) -> i32 {
+        let mut acc = 0;
+        let mut val = self.gsmart1or2();
+        while val == 32767 {
+            acc += 32767;
+            val = self.gsmart1or2();
+        }
+        acc + val
     }
 
     #[inline(always)]
@@ -684,33 +718,33 @@ mod tests {
     #[test]
     fn test_psmart_1() {
         let mut packet: Packet = Packet::new(1);
-        packet.psmart(69);
+        packet.psmart1or2(69);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(69, packet.gsmart());
+        assert_eq!(69, packet.gsmart1or2());
     }
 
     #[test]
     fn test_psmart_2() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart(3454);
+        packet.psmart1or2(3454);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(3454, packet.gsmart());
+        assert_eq!(3454, packet.gsmart1or2());
     }
 
     #[test]
     fn test_psmarts_1() {
         let mut packet: Packet = Packet::new(1);
-        packet.psmarts(-13);
+        packet.psmart1or2s(-13);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(-13, packet.gsmarts());
+        assert_eq!(-13, packet.gsmart1or2s());
     }
 
     #[test]
     fn test_psmarts_2() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmarts(-3454);
+        packet.psmart1or2s(-3454);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(-3454, packet.gsmarts());
+        assert_eq!(-3454, packet.gsmart1or2s());
     }
 
     #[test]
@@ -805,33 +839,72 @@ mod tests {
     #[test]
     fn test_gsmart_1() {
         let mut packet: Packet = Packet::new(1);
-        packet.psmart(69);
+        packet.psmart1or2(69);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(69, packet.gsmart());
+        assert_eq!(69, packet.gsmart1or2());
     }
 
     #[test]
     fn test_gsmart_2() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart(3454);
+        packet.psmart1or2(3454);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(3454, packet.gsmart());
+        assert_eq!(3454, packet.gsmart1or2());
     }
 
     #[test]
     fn test_gsmarts_1() {
         let mut packet: Packet = Packet::new(1);
-        packet.psmarts(-13);
+        packet.psmart1or2s(-13);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(-13, packet.gsmarts());
+        assert_eq!(-13, packet.gsmart1or2s());
     }
 
     #[test]
     fn test_gsmarts_2() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmarts(-3454);
+        packet.psmart1or2s(-3454);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(-3454, packet.gsmarts());
+        assert_eq!(-3454, packet.gsmart1or2s());
+    }
+
+    #[test]
+    fn test_psmart2or4_neg1() {
+        let mut packet: Packet = Packet::new(2);
+        packet.psmart2or4(-1);
+        packet.pos = 0;
+        assert_eq!(32767, packet.gsmart2or4());
+    }
+
+    #[test]
+    fn test_psmart2or4_small() {
+        let mut packet: Packet = Packet::new(2);
+        packet.psmart2or4(100);
+        packet.pos = 0;
+        assert_eq!(100, packet.gsmart2or4());
+    }
+
+    #[test]
+    fn test_psmart2or4_max_short() {
+        let mut packet: Packet = Packet::new(2);
+        packet.psmart2or4(32766);
+        packet.pos = 0;
+        assert_eq!(32766, packet.gsmart2or4());
+    }
+
+    #[test]
+    fn test_psmart2or4_large() {
+        let mut packet: Packet = Packet::new(4);
+        packet.psmart2or4(50000);
+        packet.pos = 0;
+        assert_eq!(50000, packet.gsmart2or4());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_psmart2or4_out_of_range() {
+        let mut packet: Packet = Packet::new(4);
+        packet.psmart2or4(-2);
     }
 
     #[test]
