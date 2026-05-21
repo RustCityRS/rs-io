@@ -23,9 +23,8 @@ unsafe extern "C" {
 
 const BZ2_HEADER: [u8; 4] = *b"BZh1";
 
-#[unsafe(no_mangle)]
-pub extern "C" fn bz_internal_error(_errcode: c_int) {
-    std::process::abort();
+unsafe extern "C" {
+    fn bz_internal_error(errcode: c_int);
 }
 
 #[inline]
