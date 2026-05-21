@@ -20,6 +20,5 @@ cc = "1.2"
 [dependencies]
 rs-crypto = "0.1"
 num-bigint = "0.4"
-miniz_oxide = "0.8"
 
 [dev-dependencies]
