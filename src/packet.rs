@@ -291,7 +291,7 @@ impl Packet {
             self.p2(value as u16);
         } else {
             self.p4(value);
-            self.data[self.pos - 4] |= 0x80;
+            unsafe { *self.data.as_mut_ptr().add(self.pos - 4) |= 0x80 };
         }
     }
 
@@ -406,7 +406,7 @@ impl Packet {
     #[inline(always)]
     pub const fn g1_alt2(&mut self) -> u8 {
         self.pos += 1;
-        (128u8).wrapping_sub(unsafe { *self.data.as_ptr().add(self.pos - 1) })
+        128u8.wrapping_sub(unsafe { *self.data.as_ptr().add(self.pos - 1) })
     }
 
     #[inline(always)]
@@ -474,8 +474,8 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gsmart1or2(&mut self) -> i32 {
-        if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
+    pub const fn gsmart1or2(&mut self) -> i32 {
+        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
             self.g1() as i32
         } else {
             self.g2() as i32 - 32768
@@ -483,8 +483,8 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gsmart1or2s(&mut self) -> i32 {
-        if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
+    pub const fn gsmart1or2s(&mut self) -> i32 {
+        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
             self.g1() as i32 - 64
         } else {
             self.g2() as i32 - 49152
@@ -492,8 +492,8 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gsmart2or4(&mut self) -> i32 {
-        if unsafe { *self.data.get_unchecked(self.pos) } < 128 {
+    pub const fn gsmart2or4(&mut self) -> i32 {
+        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
             self.g2() as i32
         } else {
             self.g4s() & i32::MAX
@@ -501,7 +501,7 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub fn gextended1or2(&mut self) -> i32 {
+    pub const fn gextended1or2(&mut self) -> i32 {
         let mut acc = 0;
         let mut val = self.gsmart1or2();
         while val == 32767 {
