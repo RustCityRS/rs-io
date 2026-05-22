@@ -1,6 +1,6 @@
 [package]
 name = "rs-io"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["RustCityRS"]
 description = "Protocol I/O, Jag, CRC & Compression"
@@ -18,7 +18,7 @@ bz-error-handler = []
 cc = "1.2"
 
 [dependencies]
-rs-crypto = "0.1"
+rs-crypto = "0.2"
 num-bigint = "0.4"
 
 [dev-dependencies]
