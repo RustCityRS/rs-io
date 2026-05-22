@@ -151,7 +151,7 @@ pub fn gz_compress_with(data: &[u8], level: u8, os: u8) -> Vec<u8> {
         0x1f, 0x8b, // magic
         0x08, // method = deflate
         0x00, // flags
-        0, 0, 0, 0, // mtime = 0
+        0, 0, 0, 0,    // mtime = 0
         0x00, // extra flags
         os,
     ]);
