@@ -166,7 +166,7 @@ pub fn gz_compress_with(data: &[u8], level: u8, os: u8) -> Vec<u8> {
 }
 
 pub fn gz_decompress(data: &[u8], expected_len: usize) -> Vec<u8> {
-    if data.len() < 18 {
+    if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b {
         return Vec::new();
     }
 
@@ -203,7 +203,12 @@ pub fn gz_decompress(data: &[u8], expected_len: usize) -> Vec<u8> {
         pos += 2;
     }
 
-    let deflated = &data[pos..data.len().saturating_sub(8)];
+    let end = data.len().saturating_sub(8);
+    if pos >= end {
+        return Vec::new();
+    }
+
+    let deflated = &data[pos..end];
     raw_inflate(deflated, expected_len)
 }
 
