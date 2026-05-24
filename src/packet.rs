@@ -1,4 +1,4 @@
-use crate::cp1252::{decode, encode};
+use crate::cp1252::{decode, encode_utf8_to_cp1252};
 use num_bigint::{BigInt, Sign};
 use rs_crypto::rsa::RsaKey;
 use std::io::Error;
@@ -225,35 +225,7 @@ impl Packet {
             unsafe { *dst.add(len) = terminator };
             self.pos += len + 1;
         } else {
-            let src = bytes.as_ptr();
-            let mut pos = 0;
-            let mut out = 0;
-            while pos < len {
-                let byte = unsafe { *src.add(pos) };
-                if byte < 0x80 {
-                    unsafe { *dst.add(out) = byte };
-                    pos += 1;
-                } else if byte < 0xE0 {
-                    let cp =
-                        ((byte as u32 & 0x1F) << 6) | (unsafe { *src.add(pos + 1) } as u32 & 0x3F);
-                    unsafe { *dst.add(out) = encode(cp) };
-                    pos += 2;
-                } else if byte < 0xF0 {
-                    let cp = ((byte as u32 & 0x0F) << 12)
-                        | ((unsafe { *src.add(pos + 1) } as u32 & 0x3F) << 6)
-                        | (unsafe { *src.add(pos + 2) } as u32 & 0x3F);
-                    unsafe { *dst.add(out) = encode(cp) };
-                    pos += 3;
-                } else {
-                    let cp = ((byte as u32 & 0x07) << 18)
-                        | ((unsafe { *src.add(pos + 1) } as u32 & 0x3F) << 12)
-                        | ((unsafe { *src.add(pos + 2) } as u32 & 0x3F) << 6)
-                        | (unsafe { *src.add(pos + 3) } as u32 & 0x3F);
-                    unsafe { *dst.add(out) = encode(cp) };
-                    pos += 4;
-                }
-                out += 1;
-            }
+            let out = unsafe { encode_utf8_to_cp1252(bytes.as_ptr(), dst, len) };
             unsafe { *dst.add(out) = terminator };
             self.pos += out + 1;
         }
