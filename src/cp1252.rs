@@ -84,7 +84,11 @@ pub fn encode_string(s: &str) -> Vec<u8> {
 }
 
 #[inline(always)]
-pub(crate) const unsafe fn encode_utf8_to_cp1252(src: *const u8, dst: *mut u8, len: usize) -> usize {
+pub(crate) const unsafe fn encode_utf8_to_cp1252(
+    src: *const u8,
+    dst: *mut u8,
+    len: usize,
+) -> usize {
     unsafe {
         let mut pos = 0;
         let mut out = 0;
