@@ -62,3 +62,57 @@ pub(crate) fn decode(src: &[u8], offset: usize, len: usize) -> String {
     }
     s
 }
+
+#[inline]
+pub fn decode_string(bytes: &[u8]) -> String {
+    decode(bytes, 0, bytes.len())
+}
+
+#[inline]
+pub fn encode_string(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    if s.is_ascii() {
+        return bytes.to_vec();
+    }
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    unsafe {
+        let written = encode_utf8_to_cp1252(bytes.as_ptr(), out.as_mut_ptr(), len);
+        out.set_len(written);
+    }
+    out
+}
+
+#[inline(always)]
+pub(crate) const unsafe fn encode_utf8_to_cp1252(src: *const u8, dst: *mut u8, len: usize) -> usize {
+    unsafe {
+        let mut pos = 0;
+        let mut out = 0;
+        while pos < len {
+            let byte = *src.add(pos);
+            if byte < 0x80 {
+                *dst.add(out) = byte;
+                pos += 1;
+            } else if byte < 0xE0 {
+                let cp = ((byte as u32 & 0x1F) << 6) | (*src.add(pos + 1) as u32 & 0x3F);
+                *dst.add(out) = encode(cp);
+                pos += 2;
+            } else if byte < 0xF0 {
+                let cp = ((byte as u32 & 0x0F) << 12)
+                    | ((*src.add(pos + 1) as u32 & 0x3F) << 6)
+                    | (*src.add(pos + 2) as u32 & 0x3F);
+                *dst.add(out) = encode(cp);
+                pos += 3;
+            } else {
+                let cp = ((byte as u32 & 0x07) << 18)
+                    | ((*src.add(pos + 1) as u32 & 0x3F) << 12)
+                    | ((*src.add(pos + 2) as u32 & 0x3F) << 6)
+                    | (*src.add(pos + 3) as u32 & 0x3F);
+                *dst.add(out) = encode(cp);
+                pos += 4;
+            }
+            out += 1;
+        }
+        out
+    }
+}
