@@ -1,3 +1,16 @@
+<div align="center">
+<pre>
+██████╗ ██╗   ██╗███████╗████████╗ ██████╗██╗████████╗██╗   ██╗
+██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██║╚══██╔══╝╚██╗ ██╔╝
+██████╔╝██║   ██║███████╗   ██║   ██║     ██║   ██║    ╚████╔╝ 
+██╔══██╗██║   ██║╚════██║   ██║   ██║     ██║   ██║     ╚██╔╝  
+██║  ██║╚██████╔╝███████║   ██║   ╚██████╗██║   ██║      ██║   
+╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝╚═╝   ╚═╝      ╚═╝   
+</pre>
+</div>
+
+----
+
 # rs-io — Protocol I/O, Jag, CRC & Compression
 
 Low-level binary I/O library for the RuneScape protocol. Provides fixed-size packet buffers with bit-level operations,
@@ -121,25 +134,25 @@ All write methods advance `pos` by the number of bytes written.
 
 All read methods advance `pos` by the number of bytes read.
 
-| Method                       | Bytes | Returns  | Description           |
-|------------------------------|-------|----------|-----------------------|
-| `g1()`                       | 1     | `u8`     | Unsigned byte         |
-| `g1s()`                      | 1     | `i8`     | Signed byte           |
-| `g1_alt1()`                  | 1     | `u8`     | Negate: `(-val)`      |
-| `g1_alt2()`                  | 1     | `u8`     | 128 minus: `(128-val)`|
-| `g1_alt3()`                  | 1     | `u8`     | Minus 128: `(val-128)`|
-| `g2()`                       | 2     | `u16`    | BE unsigned 16-bit    |
-| `g2s()`                      | 2     | `i16`    | BE signed 16-bit      |
-| `g2_alt1()`                  | 2     | `u16`    | BE, lo-128            |
-| `ig2()`                      | 2     | `u16`    | LE unsigned 16-bit    |
-| `ig2s()`                     | 2     | `i16`    | LE signed 16-bit      |
-| `ig2_alt1()`                 | 2     | `u16`    | LE, lo-128            |
-| `g3()`                       | 3     | `i32`    | BE 24-bit as i32      |
-| `g4s()`                      | 4     | `i32`    | BE signed 32-bit      |
-| `ig4s()`                     | 4     | `i32`    | LE signed 32-bit      |
-| `g8s()`                      | 8     | `i64`    | BE signed 64-bit      |
-| `gjstr(u8)`                  | var   | `String` | Read until terminator |
-| `gdata(&mut [u8], off, len)` | var   | —        | Bulk data read        |
+| Method                       | Bytes | Returns  | Description            |
+|------------------------------|-------|----------|------------------------|
+| `g1()`                       | 1     | `u8`     | Unsigned byte          |
+| `g1s()`                      | 1     | `i8`     | Signed byte            |
+| `g1_alt1()`                  | 1     | `u8`     | Negate: `(-val)`       |
+| `g1_alt2()`                  | 1     | `u8`     | 128 minus: `(128-val)` |
+| `g1_alt3()`                  | 1     | `u8`     | Minus 128: `(val-128)` |
+| `g2()`                       | 2     | `u16`    | BE unsigned 16-bit     |
+| `g2s()`                      | 2     | `i16`    | BE signed 16-bit       |
+| `g2_alt1()`                  | 2     | `u16`    | BE, lo-128             |
+| `ig2()`                      | 2     | `u16`    | LE unsigned 16-bit     |
+| `ig2s()`                     | 2     | `i16`    | LE signed 16-bit       |
+| `ig2_alt1()`                 | 2     | `u16`    | LE, lo-128             |
+| `g3()`                       | 3     | `i32`    | BE 24-bit as i32       |
+| `g4s()`                      | 4     | `i32`    | BE signed 32-bit       |
+| `ig4s()`                     | 4     | `i32`    | LE signed 32-bit       |
+| `g8s()`                      | 8     | `i64`    | BE signed 64-bit       |
+| `gjstr(u8)`                  | var   | `String` | Read until terminator  |
+| `gdata(&mut [u8], off, len)` | var   | —        | Bulk data read         |
 
 ---
 
