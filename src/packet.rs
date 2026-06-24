@@ -526,17 +526,16 @@ impl Packet {
     }
 }
 
-#[allow(unused)]
-struct BitWriter {
+pub struct BitWriter {
     acc: u64,
     bits: u32,
     byte: usize,
 }
 
-#[allow(unused)]
 impl BitWriter {
+    #[allow(clippy::new_without_default)]
     #[inline(always)]
-    const fn new() -> BitWriter {
+    pub const fn new() -> BitWriter {
         BitWriter {
             acc: 0,
             bits: 0,
@@ -545,14 +544,14 @@ impl BitWriter {
     }
 
     #[inline(always)]
-    const fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.acc = 0;
         self.bits = 0;
         self.byte = 0;
     }
 
     #[inline(always)]
-    const fn pbit<const N: usize>(&mut self, buf: &mut Packet, val: i32) {
+    pub const fn pbit<const N: usize>(&mut self, buf: &mut Packet, val: i32) {
         self.acc = (self.acc << N) | (val as u32 as u64 & ((1 << N) - 1));
         self.bits += N as u32;
         while self.bits >= 8 {
@@ -565,12 +564,12 @@ impl BitWriter {
     }
 
     #[inline(always)]
-    const fn bitpos(&self) -> usize {
+    pub const fn bitpos(&self) -> usize {
         (self.byte << 3) + self.bits as usize
     }
 
     #[inline(always)]
-    const fn finish(&mut self, buf: &mut Packet) {
+    pub const fn finish(&mut self, buf: &mut Packet) {
         if self.bits > 0 {
             unsafe {
                 *buf.data.as_mut_ptr().add(self.byte) = (self.acc << (8 - self.bits)) as u8;
