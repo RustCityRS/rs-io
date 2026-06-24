@@ -25,6 +25,13 @@ pub struct JagFile {
     file_queue: Vec<JagQueueFile>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JagCompression {
+    Auto,
+    PerFile,
+    WholeArchive,
+}
+
 impl JagFile {
     pub fn hash(name: &str) -> i32 {
         let mut hash: i32 = 0;
@@ -188,14 +195,20 @@ impl JagFile {
         });
     }
 
-    pub fn build(&mut self) -> Vec<u8> {
+    pub fn build(&mut self, compression: JagCompression) -> Vec<u8> {
         self.process_queue();
-        let per_entry = self.assemble(false);
-        let whole_archive = self.assemble(true);
-        if whole_archive.len() < per_entry.len() {
-            whole_archive
-        } else {
-            per_entry
+        match compression {
+            JagCompression::PerFile => self.assemble(false),
+            JagCompression::WholeArchive => self.assemble(true),
+            JagCompression::Auto => {
+                let per_entry = self.assemble(false);
+                let whole_archive = self.assemble(true);
+                if whole_archive.len() < per_entry.len() {
+                    whole_archive
+                } else {
+                    per_entry
+                }
+            }
         }
     }
 
@@ -313,7 +326,7 @@ impl JagFile {
     }
 
     pub fn save(&mut self, path: &Path) {
-        let bytes = self.build();
+        let bytes = self.build(JagCompression::Auto);
         std::fs::write(path, bytes).expect("Failed to save JagFile");
     }
 }

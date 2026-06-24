@@ -2,7 +2,6 @@ use crate::cp1252::{decode, encode_utf8_to_cp1252};
 use num_bigint::{BigInt, Sign};
 use rs_crypto::rsa::RsaKey;
 use std::io::Error;
-// ── Packet size framing ─────────────────────────────────────────────────────
 
 #[repr(u8)]
 pub enum PacketFrame {
@@ -17,13 +16,10 @@ pub enum RsaFrame {
     Short,
 }
 
-// ── Packet ──────────────────────────────────────────────────────────────────
-
 #[repr(C)]
 pub struct Packet {
     pub data: Vec<u8>,
     pub pos: usize,
-    pub pos2: usize,
 }
 
 impl Packet {
@@ -31,16 +27,11 @@ impl Packet {
         Packet {
             data: vec![0; len],
             pos: 0,
-            pos2: 0,
         }
     }
 
     pub const fn from(data: Vec<u8>) -> Packet {
-        Packet {
-            data,
-            pos: 0,
-            pos2: 0,
-        }
+        Packet { data, pos: 0 }
     }
 
     pub fn io(path: &str) -> Result<Packet, Error> {
@@ -134,8 +125,6 @@ impl Packet {
         self.pos += 8;
     }
 
-    // ── ALT byte writes ──────────────────────────────────────────────────
-
     #[inline(always)]
     pub const fn p1_alt1(&mut self, value: u8) {
         unsafe { *self.data.as_mut_ptr().add(self.pos) = (-(value as i8)) as u8 }
@@ -154,8 +143,6 @@ impl Packet {
         self.pos += 1;
     }
 
-    // ── ALT u16 writes ─────────────────────────────────────────────────
-
     #[inline(always)]
     pub const fn p2_alt1(&mut self, value: u16) {
         let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
@@ -171,8 +158,6 @@ impl Packet {
         unsafe { *ptr.add(1) = (value >> 8) as u8 };
         self.pos += 2;
     }
-
-    // ── ALT 24-bit / 32-bit writes ────────────────────────────────────
 
     #[inline(always)]
     pub const fn p3_alt2(&mut self, value: u32) {
@@ -212,8 +197,6 @@ impl Packet {
         unsafe { *ptr.add(3) = (value >> 8) as u8 };
         self.pos += 4;
     }
-
-    // ── String/Data writes ──────────────────────────────────────────────
 
     #[inline(always)]
     pub const fn pjstr(&mut self, str: &str, terminator: u8) {
@@ -367,8 +350,6 @@ impl Packet {
         val
     }
 
-    // ── ALT byte reads ───────────────────────────────────────────────────
-
     #[inline(always)]
     pub const fn g1_alt1(&mut self) -> u8 {
         self.pos += 1;
@@ -387,8 +368,6 @@ impl Packet {
         (unsafe { *self.data.as_ptr().add(self.pos - 1) }).wrapping_sub(128)
     }
 
-    // ── ALT u16 reads ──────────────────────────────────────────────────
-
     #[inline(always)]
     pub const fn g2_alt1(&mut self) -> u16 {
         let ptr = unsafe { self.data.as_ptr().add(self.pos) };
@@ -406,8 +385,6 @@ impl Packet {
         self.pos += 2;
         (hi << 8) | lo
     }
-
-    // ── ALT 32-bit reads ─────────────────────────────────────────────────
 
     #[inline(always)]
     pub const fn g4_alt1(&mut self) -> i32 {
@@ -428,8 +405,6 @@ impl Packet {
             | ((unsafe { *ptr.add(2) } as i32) << 24)
             | ((unsafe { *ptr.add(3) } as i32) << 16)
     }
-
-    // ── String reads ────────────────────────────────────────────────────
 
     #[inline(always)]
     pub fn gjstr(&mut self, terminator: u8) -> String {
@@ -496,71 +471,6 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn bits(&mut self) {
-        self.pos2 = self.pos << 3;
-    }
-
-    #[inline(always)]
-    pub const fn bytes(&mut self) {
-        self.pos = (self.pos2 + 7) >> 3;
-    }
-
-    pub const fn gbit(&mut self, mut n: usize) -> i32 {
-        let pos: usize = self.pos2;
-        self.pos2 += n;
-
-        let mut byte_pos: usize = pos >> 3;
-        let mut remaining: usize = 8 - (pos & 7);
-
-        let mut result: i32 = 0;
-
-        while n > remaining {
-            result |= (unsafe { *self.data.as_ptr().add(byte_pos) as i32 }
-                & ((1 << remaining) - 1))
-                << (n - remaining);
-            byte_pos += 1;
-            n -= remaining;
-            remaining = 8;
-        }
-
-        if n == remaining {
-            result |= unsafe { *self.data.as_ptr().add(byte_pos) as i32 } & ((1 << remaining) - 1);
-        } else {
-            result |= (unsafe { *self.data.as_ptr().add(byte_pos) as i32 } >> (remaining - n))
-                & ((1 << n) - 1);
-        }
-        result
-    }
-
-    pub const fn pbit(&mut self, mut n: usize, val: i32) {
-        let pos: usize = self.pos2;
-        self.pos2 += n;
-
-        let mut byte_pos: usize = pos >> 3;
-        let mut remaining: usize = 8 - (pos & 7);
-
-        while n > remaining {
-            let shift: i32 = (1 << remaining) - 1;
-            let byte: i32 = unsafe { *self.data.as_ptr().add(byte_pos) } as i32;
-            unsafe {
-                *self.data.as_mut_ptr().add(byte_pos) =
-                    ((byte & !shift) | ((val >> (n - remaining)) & shift)) as u8
-            }
-            byte_pos += 1;
-            n -= remaining;
-            remaining = 8;
-        }
-
-        let r: i32 = (remaining - n) as i32;
-        let shift: i32 = (1 << n) - 1;
-        let byte: i32 = unsafe { *self.data.as_ptr().add(byte_pos) } as i32;
-        unsafe {
-            *self.data.as_mut_ptr().add(byte_pos) =
-                ((byte & (!shift << r)) | ((val & shift) << r)) as u8
-        }
-    }
-
-    #[inline(always)]
     pub const fn psize1(&mut self, size: u8) {
         let pos = self.pos - size as usize - 1;
         unsafe { core::ptr::write_unaligned(self.data.as_mut_ptr().add(pos), size.to_be()) };
@@ -613,6 +523,62 @@ impl Packet {
         self.pos = 0;
         self.pdata(&dec, 0, dec.len());
         self.pos = 0;
+    }
+}
+
+#[allow(unused)]
+struct BitWriter {
+    acc: u64,
+    bits: u32,
+    byte: usize,
+}
+
+#[allow(unused)]
+impl BitWriter {
+    #[inline(always)]
+    const fn new() -> BitWriter {
+        BitWriter {
+            acc: 0,
+            bits: 0,
+            byte: 0,
+        }
+    }
+
+    #[inline(always)]
+    const fn reset(&mut self) {
+        self.acc = 0;
+        self.bits = 0;
+        self.byte = 0;
+    }
+
+    #[inline(always)]
+    const fn pbit<const N: usize>(&mut self, buf: &mut Packet, val: i32) {
+        self.acc = (self.acc << N) | (val as u32 as u64 & ((1 << N) - 1));
+        self.bits += N as u32;
+        while self.bits >= 8 {
+            self.bits -= 8;
+            unsafe {
+                *buf.data.as_mut_ptr().add(self.byte) = (self.acc >> self.bits) as u8;
+            }
+            self.byte += 1;
+        }
+    }
+
+    #[inline(always)]
+    const fn bitpos(&self) -> usize {
+        (self.byte << 3) + self.bits as usize
+    }
+
+    #[inline(always)]
+    const fn finish(&mut self, buf: &mut Packet) {
+        if self.bits > 0 {
+            unsafe {
+                *buf.data.as_mut_ptr().add(self.byte) = (self.acc << (8 - self.bits)) as u8;
+            }
+            self.byte += 1;
+            self.bits = 0;
+        }
+        buf.pos = self.byte;
     }
 }
 
@@ -933,40 +899,6 @@ mod tests {
         packet.ip2(65535);
         packet.pos = 0;
         assert_eq!(65535, packet.ig2());
-    }
-
-    #[test]
-    fn test_gbit() {
-        let mut packet: Packet = Packet::new(2);
-        packet.bits(); // Switch to bits mode.
-        packet.pbit(1, 0);
-        packet.pbit(4, 3);
-        packet.pbit(7, 13);
-        packet.bytes(); // Switch to bytes mode.
-        packet.pos = 0; // Resetting the packet for showing test case.
-        packet.pos2 = 0; // Resetting the packet for showing test case.
-        packet.bits(); // Switch to bits mode.
-        assert_eq!(0, packet.gbit(1));
-        assert_eq!(3, packet.gbit(4));
-        assert_eq!(13, packet.gbit(7));
-        packet.bytes(); // Switch to bytes mode.
-    }
-
-    #[test]
-    fn test_pbit() {
-        let mut packet: Packet = Packet::new(2);
-        packet.bits(); // Switch to bits mode.
-        packet.pbit(1, 0);
-        packet.pbit(4, 3);
-        packet.pbit(7, 13);
-        packet.bytes(); // Switch to bytes mode.
-        packet.pos = 0; // Resetting the packet for showing test case.
-        packet.pos2 = 0; // Resetting the packet for showing test case.
-        packet.bits(); // Switch to bits mode.
-        assert_eq!(0, packet.gbit(1));
-        assert_eq!(3, packet.gbit(4));
-        assert_eq!(13, packet.gbit(7));
-        packet.bytes(); // Switch to bytes mode.
     }
 
     #[test]

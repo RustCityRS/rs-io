@@ -1,6 +1,6 @@
 [package]
 name = "rs-io"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 authors = ["RustCityRS"]
 description = "Protocol I/O, Jag, CRC & Compression"
