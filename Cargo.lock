@@ -96,9 +96,9 @@ dependencies = [
 
 [[package]]
 name = "rs-crypto"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afe2b67889eb503016f859ab3634690db9118fb8b50c05c6354e0420e41749f1"
+checksum = "aee445acb800071ce33eb0e675c1943b73cf72fd935b53e7fbbcc7ffda8f1c07"
 dependencies = [
  "base64",
  "cc",
