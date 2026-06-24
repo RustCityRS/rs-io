@@ -11,7 +11,7 @@
 
 ----
 
-# rs-io — Protocol I/O, Jag, CRC & Compression
+# rs-io — Protocol I/O, Jag, Js5, CRC & Compression
 
 Low-level binary I/O library for the RuneScape protocol. Provides fixed-size packet buffers with bit-level operations,
 RSA encryption, bzip2 compression, CRC-32 checksums, and Jag archive file handling.
