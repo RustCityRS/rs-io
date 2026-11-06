@@ -10,7 +10,6 @@ fn main() {
             "csrc/compress.c",
             "csrc/decompress.c",
             "csrc/bzlib.c",
-            "csrc/zcrc32.c",
             // zlib 1.2.3 (deflate + inflate)
             "csrc/zlib/deflate.c",
             "csrc/zlib/trees.c",
@@ -24,6 +23,7 @@ fn main() {
         .include("csrc")
         .include("csrc/zlib")
         .define("BZ_NO_STDIO", None)
+        .define("NO_GZIP", None)
         .opt_level(3)
         .warnings(false);
 

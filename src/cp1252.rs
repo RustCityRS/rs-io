@@ -41,7 +41,7 @@ pub(crate) const fn encode(cp: u32) -> u8 {
 #[inline(always)]
 pub(crate) fn decode(src: &[u8], offset: usize, len: usize) -> String {
     let slice = unsafe { core::slice::from_raw_parts(src.as_ptr().add(offset), len) };
-    if slice.iter().all(|&b| b > 0 && b < 128) {
+    if slice.is_ascii() && !slice.contains(&0) {
         return unsafe { String::from_utf8_unchecked(slice.to_vec()) };
     }
     let mut s = String::with_capacity(len);
