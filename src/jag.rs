@@ -1,5 +1,6 @@
 use crate::Packet;
 use crate::bz2::{bz2_compress, bz2_decompress};
+use std::mem::take;
 use std::path::Path;
 
 struct JagQueueFile {
@@ -267,7 +268,7 @@ impl JagFile {
     }
 
     fn process_queue(&mut self) {
-        let queue: Vec<JagQueueFile> = self.file_queue.drain(..).collect();
+        let queue = take(&mut self.file_queue);
 
         let mut hashes: Vec<i32> = self.file_hashes.take().map_or_else(Vec::new, Vec::from);
         let mut unpacks: Vec<i32> = self.file_unpacks.take().map_or_else(Vec::new, Vec::from);

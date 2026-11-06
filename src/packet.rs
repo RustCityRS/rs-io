@@ -1,7 +1,9 @@
 use crate::cp1252::{decode, encode_utf8_to_cp1252};
-use num_bigint::{BigInt, Sign};
+use memchr::memchr;
 use rs_crypto::rsa::RsaKey;
+use std::fs;
 use std::io::Error;
+use std::ptr::{copy_nonoverlapping, read_unaligned, write_unaligned};
 
 #[repr(u8)]
 pub enum PacketFrame {
@@ -17,12 +19,21 @@ pub enum RsaFrame {
 }
 
 #[repr(C)]
-pub struct Packet {
-    pub data: Vec<u8>,
+pub struct Packet<T = Vec<u8>> {
+    pub data: T,
     pub pos: usize,
 }
 
 impl Packet {
+    #[inline]
+    pub fn sizejstr(value: &str) -> usize {
+        if value.is_ascii() {
+            value.len() + 1
+        } else {
+            value.chars().count() + 1
+        }
+    }
+
     pub fn new(len: usize) -> Packet {
         Packet {
             data: vec![0; len],
@@ -30,43 +41,300 @@ impl Packet {
         }
     }
 
-    pub const fn from(data: Vec<u8>) -> Packet {
-        Packet { data, pos: 0 }
-    }
-
     pub fn io(path: &str) -> Result<Packet, Error> {
-        match std::fs::read(path) {
+        match fs::read(path) {
             Ok(bytes) => Ok(Packet::from(bytes)),
             Err(err) => Err(err),
         }
     }
 
+    pub fn rsaencrypt(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
+        let enc = rsa.encrypt(&self.data[..self.pos]);
+
+        self.pos = 0;
+        match frame {
+            RsaFrame::Byte => self.p1(enc.len() as u8),
+            RsaFrame::Short => self.p2(enc.len() as u16),
+        }
+        self.pdata(&enc, 0, enc.len());
+    }
+
+    pub fn rsadecrypt(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
+        let len = match frame {
+            RsaFrame::Byte => self.g1() as usize,
+            RsaFrame::Short => self.g2() as usize,
+        };
+        let dec = rsa.decrypt(&self.data[self.pos..self.pos + len]);
+        self.pos += len;
+
+        self.pos = 0;
+        self.pdata(&dec, 0, dec.len());
+        self.pos = 0;
+    }
+}
+
+impl<T> Packet<T> {
+    pub const fn from(data: T) -> Self {
+        Packet { data, pos: 0 }
+    }
+}
+
+impl<T: AsRef<[u8]>> Packet<T> {
     #[inline(always)]
-    pub const fn remaining(&self) -> i32 {
+    pub fn remaining(&self) -> i32 {
         (self.len() - self.pos) as i32
     }
 
     #[inline(always)]
-    pub const fn len(&self) -> usize {
-        self.data.len()
+    pub fn len(&self) -> usize {
+        self.data.as_ref().len()
     }
 
     #[inline(always)]
-    pub const fn is_empty(&self) -> bool {
-        self.data.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.data.as_ref().is_empty()
     }
 
     #[inline(always)]
-    pub const fn p1(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = value }
+    pub fn g1(&mut self) -> u8 {
+        self.pos += 1;
+        unsafe { *self.data.as_ref().as_ptr().add(self.pos - 1) }
+    }
+
+    #[inline(always)]
+    pub fn g1s(&mut self) -> i8 {
+        self.pos += 1;
+        (unsafe { *self.data.as_ref().as_ptr().add(self.pos - 1) }) as i8
+    }
+
+    #[inline(always)]
+    pub fn g2(&mut self) -> u16 {
+        let val = u16::from_be(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const u16)
+        });
+        self.pos += 2;
+        val
+    }
+
+    #[inline(always)]
+    pub fn g2s(&mut self) -> i16 {
+        let val = i16::from_be(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i16)
+        });
+        self.pos += 2;
+        val
+    }
+
+    #[inline(always)]
+    pub fn g2_alt1(&mut self) -> u16 {
+        let val = u16::from_le(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const u16)
+        });
+        self.pos += 2;
+        val
+    }
+
+    #[inline(always)]
+    pub fn g2s_alt1(&mut self) -> i16 {
+        let val = i16::from_le(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i16)
+        });
+        self.pos += 2;
+        val
+    }
+
+    // java ints are always signed (java 8 added unsigned)
+    #[inline(always)]
+    pub fn g3(&mut self) -> i32 {
+        let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
+        let val = ((unsafe { *ptr } as u32) << 16)
+            | u16::from_be(unsafe { read_unaligned(ptr.add(1) as *const u16) }) as u32;
+        self.pos += 3;
+        val as i32
+    }
+
+    // java ints are always signed (java 8 added unsigned)
+    #[inline(always)]
+    pub fn g4s(&mut self) -> i32 {
+        let val = i32::from_be(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i32)
+        });
+        self.pos += 4;
+        val
+    }
+
+    // java ints are always signed (java 8 added unsigned)
+    #[inline(always)]
+    pub fn g4s_alt1(&mut self) -> i32 {
+        let val = i32::from_le(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i32)
+        });
+        self.pos += 4;
+        val
+    }
+
+    // java longs are always signed (java 8 added unsigned)
+    #[inline(always)]
+    pub fn g8s(&mut self) -> i64 {
+        let val = i64::from_be(unsafe {
+            read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i64)
+        });
+        self.pos += 8;
+        val
+    }
+
+    #[inline(always)]
+    pub fn g1_alt2(&mut self) -> u8 {
+        self.pos += 1;
+        0u8.wrapping_sub(unsafe { *self.data.as_ref().as_ptr().add(self.pos - 1) })
+    }
+
+    #[inline(always)]
+    pub fn g1_alt3(&mut self) -> u8 {
+        self.pos += 1;
+        128u8.wrapping_sub(unsafe { *self.data.as_ref().as_ptr().add(self.pos - 1) })
+    }
+
+    #[inline(always)]
+    pub fn g1_alt1(&mut self) -> u8 {
+        self.pos += 1;
+        (unsafe { *self.data.as_ref().as_ptr().add(self.pos - 1) }).wrapping_sub(128)
+    }
+
+    #[inline(always)]
+    pub fn g2_alt2(&mut self) -> u16 {
+        let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
+        let hi = unsafe { *ptr } as u16;
+        let lo = (unsafe { *ptr.add(1) }).wrapping_sub(128) as u16;
+        self.pos += 2;
+        (hi << 8) | lo
+    }
+
+    #[inline(always)]
+    pub fn g2_alt3(&mut self) -> u16 {
+        let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
+        let lo = (unsafe { *ptr }).wrapping_sub(128) as u16;
+        let hi = unsafe { *ptr.add(1) } as u16;
+        self.pos += 2;
+        (hi << 8) | lo
+    }
+
+    #[inline(always)]
+    pub fn g4s_alt3(&mut self) -> i32 {
+        let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
+        self.pos += 4;
+        ((unsafe { *ptr } as i32) << 16)
+            | ((unsafe { *ptr.add(1) } as i32) << 24)
+            | (unsafe { *ptr.add(2) } as i32)
+            | ((unsafe { *ptr.add(3) } as i32) << 8)
+    }
+
+    #[inline(always)]
+    pub fn g4s_alt2(&mut self) -> i32 {
+        let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
+        self.pos += 4;
+        ((unsafe { *ptr } as i32) << 8)
+            | (unsafe { *ptr.add(1) } as i32)
+            | ((unsafe { *ptr.add(2) } as i32) << 24)
+            | ((unsafe { *ptr.add(3) } as i32) << 16)
+    }
+
+    #[inline(always)]
+    pub fn gjstr(&mut self, terminator: u8) -> String {
+        let pos = self.pos;
+        let data = unsafe { self.data.as_ref().get_unchecked(pos..) };
+        let len = unsafe { memchr(terminator, data).unwrap_unchecked() };
+        self.pos += len + 1;
+        if len == 0 {
+            return String::new();
+        }
+        decode(self.data.as_ref(), pos, len)
+    }
+
+    #[inline(always)]
+    pub fn gsmart1or2(&mut self) -> i32 {
+        if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
+            self.g1() as i32
+        } else {
+            self.g2() as i32 - 32768
+        }
+    }
+
+    #[inline(always)]
+    pub fn gsmart1or2s(&mut self) -> i32 {
+        if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
+            self.g1() as i32 - 64
+        } else {
+            self.g2() as i32 - 49152
+        }
+    }
+
+    #[inline(always)]
+    pub fn gsmart2or4s(&mut self) -> i32 {
+        if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
+            self.g2() as i32
+        } else {
+            self.g4s() & i32::MAX
+        }
+    }
+
+    #[inline(always)]
+    pub fn gsmart2or4null(&mut self) -> i32 {
+        if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
+            let value = self.g2();
+            if value == 32767 { -1 } else { value as i32 }
+        } else {
+            self.g4s() & i32::MAX
+        }
+    }
+
+    #[inline(always)]
+    pub fn gmidivarlen(&mut self) -> u32 {
+        let mut value = 0;
+        let mut byte = self.g1();
+        while byte & 0x80 != 0 {
+            value = (value | (byte & 0x7f) as u32) << 7;
+            byte = self.g1();
+        }
+        value | byte as u32
+    }
+
+    #[inline(always)]
+    pub fn gextended1or2(&mut self) -> i32 {
+        let mut acc = 0;
+        let mut val = self.gsmart1or2();
+        while val == 32767 {
+            acc += 32767;
+            val = self.gsmart1or2();
+        }
+        acc + val
+    }
+
+    #[inline(always)]
+    pub fn gdata(&mut self, dest: &mut [u8], offset: usize, length: usize) {
+        unsafe {
+            copy_nonoverlapping(
+                self.data.as_ref().as_ptr().add(self.pos),
+                dest.as_mut_ptr().add(offset),
+                length,
+            )
+        };
+        self.pos += length;
+    }
+}
+
+impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
+    #[inline(always)]
+    pub fn p1(&mut self, value: u8) {
+        unsafe { *self.data.as_mut().as_mut_ptr().add(self.pos) = value }
         self.pos += 1;
     }
 
     #[inline(always)]
-    pub const fn p2(&mut self, value: u16) {
+    pub fn p2(&mut self, value: u16) {
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.pos) as *mut u16,
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(self.pos) as *mut u16,
                 value.to_be(),
             )
         };
@@ -74,10 +342,10 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn ip2(&mut self, value: u16) {
+    pub fn p2_alt1(&mut self, value: u16) {
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.pos) as *mut u16,
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(self.pos) as *mut u16,
                 value.to_le(),
             )
         };
@@ -85,18 +353,18 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn p3(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p3(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value >> 16) as u8 };
-        unsafe { core::ptr::write_unaligned(ptr.add(1) as *mut u16, (value as u16).to_be()) };
+        unsafe { write_unaligned(ptr.add(1) as *mut u16, (value as u16).to_be()) };
         self.pos += 3;
     }
 
     #[inline(always)]
-    pub const fn p4(&mut self, value: i32) {
+    pub fn p4(&mut self, value: i32) {
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.pos) as *mut i32,
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(self.pos) as *mut i32,
                 value.to_be(),
             )
         };
@@ -104,10 +372,10 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn ip4(&mut self, value: i32) {
+    pub fn p4_alt1(&mut self, value: i32) {
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.pos) as *mut i32,
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(self.pos) as *mut i32,
                 value.to_le(),
             )
         };
@@ -115,10 +383,10 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn p8(&mut self, value: i64) {
+    pub fn p8(&mut self, value: i64) {
         unsafe {
-            core::ptr::write_unaligned(
-                self.data.as_mut_ptr().add(self.pos) as *mut i64,
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(self.pos) as *mut i64,
                 value.to_be(),
             )
         };
@@ -126,42 +394,42 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn p1_alt1(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = (-(value as i8)) as u8 }
+    pub fn p1_alt2(&mut self, value: u8) {
+        unsafe { *self.data.as_mut().as_mut_ptr().add(self.pos) = 0u8.wrapping_sub(value) }
         self.pos += 1;
     }
 
     #[inline(always)]
-    pub const fn p1_alt2(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = 128u8.wrapping_sub(value) }
+    pub fn p1_alt3(&mut self, value: u8) {
+        unsafe { *self.data.as_mut().as_mut_ptr().add(self.pos) = 128u8.wrapping_sub(value) }
         self.pos += 1;
     }
 
     #[inline(always)]
-    pub const fn p1_alt3(&mut self, value: u8) {
-        unsafe { *self.data.as_mut_ptr().add(self.pos) = value.wrapping_add(128) }
+    pub fn p1_alt1(&mut self, value: u8) {
+        unsafe { *self.data.as_mut().as_mut_ptr().add(self.pos) = value.wrapping_add(128) }
         self.pos += 1;
     }
 
     #[inline(always)]
-    pub const fn p2_alt1(&mut self, value: u16) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p2_alt2(&mut self, value: u16) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value >> 8) as u8 };
         unsafe { *ptr.add(1) = (value as u8).wrapping_add(128) };
         self.pos += 2;
     }
 
     #[inline(always)]
-    pub const fn ip2_alt1(&mut self, value: u16) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p2_alt3(&mut self, value: u16) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value as u8).wrapping_add(128) };
         unsafe { *ptr.add(1) = (value >> 8) as u8 };
         self.pos += 2;
     }
 
     #[inline(always)]
-    pub const fn p3_alt2(&mut self, value: u32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p3_alt2(&mut self, value: u32) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value >> 16) as u8 };
         unsafe { *ptr.add(1) = value as u8 };
         unsafe { *ptr.add(2) = (value >> 8) as u8 };
@@ -169,18 +437,8 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn p4_alt1(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
-        unsafe { *ptr = (value >> 16) as u8 };
-        unsafe { *ptr.add(1) = (value >> 24) as u8 };
-        unsafe { *ptr.add(2) = value as u8 };
-        unsafe { *ptr.add(3) = (value >> 8) as u8 };
-        self.pos += 4;
-    }
-
-    #[inline(always)]
-    pub const fn p4_alt2(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p4_alt2(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value >> 8) as u8 };
         unsafe { *ptr.add(1) = value as u8 };
         unsafe { *ptr.add(2) = (value >> 24) as u8 };
@@ -189,8 +447,8 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn p4_alt3(&mut self, value: i32) {
-        let ptr = unsafe { self.data.as_mut_ptr().add(self.pos) };
+    pub fn p4_alt3(&mut self, value: i32) {
+        let ptr = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         unsafe { *ptr = (value >> 16) as u8 };
         unsafe { *ptr.add(1) = (value >> 24) as u8 };
         unsafe { *ptr.add(2) = value as u8 };
@@ -199,12 +457,12 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn pjstr(&mut self, str: &str, terminator: u8) {
+    pub fn pjstr(&mut self, str: &str, terminator: u8) {
         let bytes = str.as_bytes();
         let len = bytes.len();
-        let dst = unsafe { self.data.as_mut_ptr().add(self.pos) };
+        let dst = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
         if str.is_ascii() {
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len) };
+            unsafe { copy_nonoverlapping(bytes.as_ptr(), dst, len) };
             unsafe { *dst.add(len) = terminator };
             self.pos += len + 1;
         } else {
@@ -221,7 +479,7 @@ impl Packet {
         } else if (0..32768).contains(&value) {
             self.p2((value + 32768) as u16);
         } else {
-            panic!("Error psmart out of range: {value}");
+            panic!("Error psmart1or2 out of range: {value}");
         }
     }
 
@@ -232,30 +490,47 @@ impl Packet {
         } else if (-16384..16384).contains(&value) {
             self.p2((value + 49152) as u16);
         } else {
-            panic!("Error psmarts out of range: {value}");
+            panic!("Error psmart1or2s out of range: {value}");
         }
     }
 
     #[inline(always)]
-    pub fn psmart2or4(&mut self, value: i32) {
+    pub fn psmart2or4null(&mut self, value: i32) {
         if value < -1 {
-            panic!("Error psmart2or4 out of range: {value}");
+            panic!("Error psmart2or4null out of range: {value}");
         } else if value == -1 {
             self.p2(32767);
         } else if value < 32767 {
             self.p2(value as u16);
         } else {
             self.p4(value);
-            unsafe { *self.data.as_mut_ptr().add(self.pos - 4) |= 0x80 };
+            unsafe { *self.data.as_mut().as_mut_ptr().add(self.pos - 4) |= 0x80 };
         }
     }
 
     #[inline(always)]
-    pub const fn pdata(&mut self, src: &[u8], offset: usize, length: usize) {
+    pub fn pvarint(&mut self, value: u32) {
+        if value & 0xffffff80 != 0 {
+            if value & 0xffffc000 != 0 {
+                if value & 0xffe00000 != 0 {
+                    if value & 0xf0000000 != 0 {
+                        self.p1((value >> 28) as u8 | 0x80);
+                    }
+                    self.p1((value >> 21) as u8 | 0x80);
+                }
+                self.p1((value >> 14) as u8 | 0x80);
+            }
+            self.p1((value >> 7) as u8 | 0x80);
+        }
+        self.p1(value as u8 & 0x7f);
+    }
+
+    #[inline(always)]
+    pub fn pdata(&mut self, src: &[u8], offset: usize, length: usize) {
         unsafe {
-            core::ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 src.as_ptr().add(offset),
-                self.data.as_mut_ptr().add(self.pos),
+                self.data.as_mut().as_mut_ptr().add(self.pos),
                 length,
             )
         };
@@ -263,266 +538,31 @@ impl Packet {
     }
 
     #[inline(always)]
-    pub const fn g1(&mut self) -> u8 {
-        self.pos += 1;
-        unsafe { *self.data.as_ptr().add(self.pos - 1) }
-    }
-
-    #[inline(always)]
-    pub const fn g1s(&mut self) -> i8 {
-        self.pos += 1;
-        (unsafe { *self.data.as_ptr().add(self.pos - 1) }) as i8
-    }
-
-    #[inline(always)]
-    pub const fn g2(&mut self) -> u16 {
-        let val = u16::from_be(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const u16)
-        });
-        self.pos += 2;
-        val
-    }
-
-    #[inline(always)]
-    pub const fn g2s(&mut self) -> i16 {
-        let val = i16::from_be(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i16)
-        });
-        self.pos += 2;
-        val
-    }
-
-    #[inline(always)]
-    pub const fn ig2(&mut self) -> u16 {
-        let val = u16::from_le(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const u16)
-        });
-        self.pos += 2;
-        val
-    }
-
-    #[inline(always)]
-    pub const fn ig2s(&mut self) -> i16 {
-        let val = i16::from_le(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i16)
-        });
-        self.pos += 2;
-        val
-    }
-
-    // java ints are always signed (java 8 added unsigned)
-    #[inline(always)]
-    pub const fn g3(&mut self) -> i32 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        let val = ((unsafe { *ptr } as u32) << 16)
-            | u16::from_be(unsafe { core::ptr::read_unaligned(ptr.add(1) as *const u16) }) as u32;
-        self.pos += 3;
-        val as i32
-    }
-
-    // java ints are always signed (java 8 added unsigned)
-    #[inline(always)]
-    pub const fn g4s(&mut self) -> i32 {
-        let val = i32::from_be(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i32)
-        });
-        self.pos += 4;
-        val
-    }
-
-    // java ints are always signed (java 8 added unsigned)
-    #[inline(always)]
-    pub const fn ig4s(&mut self) -> i32 {
-        let val = i32::from_le(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i32)
-        });
-        self.pos += 4;
-        val
-    }
-
-    // java longs are always signed (java 8 added unsigned)
-    #[inline(always)]
-    pub const fn g8s(&mut self) -> i64 {
-        let val = i64::from_be(unsafe {
-            core::ptr::read_unaligned(self.data.as_ptr().add(self.pos) as *const i64)
-        });
-        self.pos += 8;
-        val
-    }
-
-    #[inline(always)]
-    pub const fn g1_alt1(&mut self) -> u8 {
-        self.pos += 1;
-        (-(unsafe { *self.data.as_ptr().add(self.pos - 1) } as i8)) as u8
-    }
-
-    #[inline(always)]
-    pub const fn g1_alt2(&mut self) -> u8 {
-        self.pos += 1;
-        128u8.wrapping_sub(unsafe { *self.data.as_ptr().add(self.pos - 1) })
-    }
-
-    #[inline(always)]
-    pub const fn g1_alt3(&mut self) -> u8 {
-        self.pos += 1;
-        (unsafe { *self.data.as_ptr().add(self.pos - 1) }).wrapping_sub(128)
-    }
-
-    #[inline(always)]
-    pub const fn g2_alt1(&mut self) -> u16 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        let hi = unsafe { *ptr } as u16;
-        let lo = (unsafe { *ptr.add(1) }).wrapping_sub(128) as u16;
-        self.pos += 2;
-        (hi << 8) | lo
-    }
-
-    #[inline(always)]
-    pub const fn ig2_alt1(&mut self) -> u16 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        let lo = (unsafe { *ptr }).wrapping_sub(128) as u16;
-        let hi = unsafe { *ptr.add(1) } as u16;
-        self.pos += 2;
-        (hi << 8) | lo
-    }
-
-    #[inline(always)]
-    pub const fn g4_alt1(&mut self) -> i32 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        self.pos += 4;
-        ((unsafe { *ptr } as i32) << 16)
-            | ((unsafe { *ptr.add(1) } as i32) << 24)
-            | (unsafe { *ptr.add(2) } as i32)
-            | ((unsafe { *ptr.add(3) } as i32) << 8)
-    }
-
-    #[inline(always)]
-    pub const fn g4_alt2(&mut self) -> i32 {
-        let ptr = unsafe { self.data.as_ptr().add(self.pos) };
-        self.pos += 4;
-        ((unsafe { *ptr } as i32) << 8)
-            | (unsafe { *ptr.add(1) } as i32)
-            | ((unsafe { *ptr.add(2) } as i32) << 24)
-            | ((unsafe { *ptr.add(3) } as i32) << 16)
-    }
-
-    #[inline(always)]
-    pub fn gjstr(&mut self, terminator: u8) -> String {
-        let pos = self.pos;
-        while unsafe { *self.data.get_unchecked(self.pos) } != terminator {
-            self.pos += 1;
-        }
-        let len = self.pos - pos;
-        self.pos += 1;
-        if len == 0 {
-            return String::new();
-        }
-        decode(&self.data, pos, len)
-    }
-
-    #[inline(always)]
-    pub const fn gsmart1or2(&mut self) -> i32 {
-        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
-            self.g1() as i32
-        } else {
-            self.g2() as i32 - 32768
-        }
-    }
-
-    #[inline(always)]
-    pub const fn gsmart1or2s(&mut self) -> i32 {
-        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
-            self.g1() as i32 - 64
-        } else {
-            self.g2() as i32 - 49152
-        }
-    }
-
-    #[inline(always)]
-    pub const fn gsmart2or4(&mut self) -> i32 {
-        if unsafe { *self.data.as_ptr().add(self.pos) } < 128 {
-            self.g2() as i32
-        } else {
-            self.g4s() & i32::MAX
-        }
-    }
-
-    #[inline(always)]
-    pub const fn gextended1or2(&mut self) -> i32 {
-        let mut acc = 0;
-        let mut val = self.gsmart1or2();
-        while val == 32767 {
-            acc += 32767;
-            val = self.gsmart1or2();
-        }
-        acc + val
-    }
-
-    #[inline(always)]
-    pub const fn gdata(&mut self, dest: &mut [u8], offset: usize, length: usize) {
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                self.data.as_ptr().add(self.pos),
-                dest.as_mut_ptr().add(offset),
-                length,
-            )
-        };
-        self.pos += length;
-    }
-
-    #[inline(always)]
-    pub const fn psize1(&mut self, size: u8) {
+    pub fn psize1(&mut self, size: u8) {
         let pos = self.pos - size as usize - 1;
-        unsafe { core::ptr::write_unaligned(self.data.as_mut_ptr().add(pos), size.to_be()) };
+        unsafe { write_unaligned(self.data.as_mut().as_mut_ptr().add(pos), size.to_be()) };
     }
 
     #[inline(always)]
-    pub const fn psize2(&mut self, size: u16) {
+    pub fn psize2(&mut self, size: u16) {
         let pos = self.pos - size as usize - 2;
         unsafe {
-            core::ptr::write_unaligned(self.data.as_mut_ptr().add(pos) as *mut u16, size.to_be())
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(pos) as *mut u16,
+                size.to_be(),
+            )
         };
     }
 
     #[inline(always)]
-    pub const fn psize4(&mut self, size: i32) {
+    pub fn psize4(&mut self, size: i32) {
         let pos = self.pos - size as usize - 4;
         unsafe {
-            core::ptr::write_unaligned(self.data.as_mut_ptr().add(pos) as *mut i32, size.to_be())
+            write_unaligned(
+                self.data.as_mut().as_mut_ptr().add(pos) as *mut i32,
+                size.to_be(),
+            )
         };
-    }
-
-    pub fn rsaenc(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
-        let raw = BigInt::from_bytes_be(Sign::Plus, &self.data[..self.pos]);
-        let enc = raw.modpow(&rsa.e, &rsa.n).to_bytes_be().1;
-
-        self.pos = 0;
-        match frame {
-            RsaFrame::Byte => self.p1(enc.len() as u8),
-            RsaFrame::Short => self.p2(enc.len() as u16),
-        }
-        self.pdata(&enc, 0, enc.len());
-    }
-
-    pub fn rsadec(&mut self, frame: RsaFrame, rsa: &'static RsaKey) {
-        let len = match frame {
-            RsaFrame::Byte => self.g1() as usize,
-            RsaFrame::Short => self.g2() as usize,
-        };
-        let raw = BigInt::from_bytes_be(Sign::Plus, &self.data[self.pos..self.pos + len]);
-        self.pos += len;
-
-        let m1 = raw.modpow(&rsa.dp, &rsa.p);
-        let m2 = raw.modpow(&rsa.dq, &rsa.q);
-        let mut h = &rsa.qinv * (&m1 - &m2) % &rsa.p;
-        if h.sign() == Sign::Minus {
-            h += &rsa.p;
-        }
-        let dec = (m2 + h * &rsa.q).to_bytes_be().1;
-
-        self.pos = 0;
-        self.pdata(&dec, 0, dec.len());
-        self.pos = 0;
     }
 }
 
@@ -584,6 +624,70 @@ impl BitWriter {
 #[cfg(test)]
 mod tests {
     use crate::Packet;
+
+    #[test]
+    fn varints_match_client_bytes() {
+        let cases: &[(u32, &[u8])] = &[
+            (0, &[0]),
+            (127, &[0x7f]),
+            (128, &[0x81, 0]),
+            (16383, &[0xff, 0x7f]),
+            (16384, &[0x81, 0x80, 0]),
+            (0x0fff_ffff, &[0xff, 0xff, 0xff, 0x7f]),
+            (u32::MAX, &[0x8f, 0xff, 0xff, 0xff, 0x7f]),
+        ];
+        for &(value, wire) in cases {
+            let mut data = [42; 7];
+            let mut out = Packet::from(&mut data[..]);
+            out.pos = 1;
+            out.pvarint(value);
+            assert_eq!(out.pos, wire.len() + 1);
+            assert_eq!(&data[1..wire.len() + 1], wire);
+            assert_eq!(data[0], 42);
+            assert_eq!(data[wire.len() + 1], 42);
+            let mut input = Packet::from(&data[1..]);
+            assert_eq!(input.gmidivarlen(), value);
+            assert_eq!(input.pos, wire.len());
+        }
+    }
+
+    #[test]
+    fn names_match_client_byte_orders() {
+        let mut buf = Packet::from([0; 16]);
+        buf.p1_alt1(0x12);
+        buf.p1_alt2(0x12);
+        buf.p1_alt3(0x12);
+        buf.p2_alt2(0x1234);
+        buf.p2_alt3(0x1234);
+        buf.p4_alt2(0x12345678);
+        buf.p4_alt3(0x12345678);
+        assert_eq!(
+            &buf.data[..buf.pos],
+            &[
+                0x92, 0xee, 0x6e, 0x12, 0xb4, 0xb4, 0x12, 0x56, 0x78, 0x12, 0x34, 0x34, 0x12, 0x78,
+                0x56
+            ]
+        );
+        buf.pos = 0;
+        assert_eq!(buf.g1_alt1(), 0x12);
+        assert_eq!(buf.g1_alt2(), 0x12);
+        assert_eq!(buf.g1_alt3(), 0x12);
+        assert_eq!(buf.g2_alt2(), 0x1234);
+        assert_eq!(buf.g2_alt3(), 0x1234);
+        assert_eq!(buf.g4s_alt2(), 0x12345678);
+        assert_eq!(buf.g4s_alt3(), 0x12345678);
+        for value in 0..=255 {
+            buf.pos = 0;
+            buf.p1_alt2(value);
+            assert_eq!(buf.data[0], value.wrapping_neg());
+            buf.pos = 0;
+            assert_eq!(buf.g1_alt2(), value);
+        }
+        buf.pos = 0;
+        buf.psmart1or2s(-64);
+        buf.psmart1or2(128);
+        assert_eq!(&buf.data[..buf.pos], &[0, 0x80, 0x80]);
+    }
     use crate::packet::RsaFrame;
     use rs_crypto::rsa::{RsaKey, parse_rsa_key_from_pem};
 
@@ -604,11 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ip2() {
+    fn test_p2_alt1() {
         let mut packet: Packet = Packet::new(2);
-        packet.ip2(32767);
+        packet.p2_alt1(32767);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(32767, packet.ig2s());
+        assert_eq!(32767, packet.g2s_alt1());
     }
 
     #[test]
@@ -628,11 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ip4() {
+    fn test_p4_alt1() {
         let mut packet: Packet = Packet::new(4);
-        packet.ip4(2147483647);
+        packet.p4_alt1(2147483647);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(2147483647, packet.ig4s());
+        assert_eq!(2147483647, packet.g4s_alt1());
     }
 
     #[test]
@@ -653,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn test_psmart_1() {
+    fn test_psmart1or2_1() {
         let mut packet: Packet = Packet::new(1);
         packet.psmart1or2(69);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -661,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn test_psmart_2() {
+    fn test_psmart1or2_2() {
         let mut packet: Packet = Packet::new(2);
         packet.psmart1or2(3454);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -669,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn test_psmarts_1() {
+    fn test_psmart1or2s_1() {
         let mut packet: Packet = Packet::new(1);
         packet.psmart1or2s(-13);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -677,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn test_psmarts_2() {
+    fn test_psmart1or2s_2() {
         let mut packet: Packet = Packet::new(2);
         packet.psmart1or2s(-3454);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -725,11 +829,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ig2s() {
+    fn test_g2s_alt1() {
         let mut packet: Packet = Packet::new(2);
-        packet.ip2(32767);
+        packet.p2_alt1(32767);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(32767, packet.ig2s());
+        assert_eq!(32767, packet.g2s_alt1());
     }
 
     #[test]
@@ -749,11 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn test_ig4s() {
+    fn test_g4s_alt1() {
         let mut packet: Packet = Packet::new(4);
-        packet.ip4(2147483647);
+        packet.p4_alt1(2147483647);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(2147483647, packet.ig4s());
+        assert_eq!(2147483647, packet.g4s_alt1());
     }
 
     #[test]
@@ -774,7 +878,28 @@ mod tests {
     }
 
     #[test]
-    fn test_gsmart_1() {
+    fn strings_preserve_terminators_cp1252_and_position() {
+        for terminator in [0, 10] {
+            for offset in 0..32 {
+                for len in [0, 1, 4, 12, 16, 31, 32, 33, 63, 64, 1024] {
+                    let mut data = vec![b'a'; offset + len + 1];
+                    data[offset + len] = terminator;
+                    let mut packet = Packet::from(data.as_slice());
+                    packet.pos = offset;
+                    assert_eq!(packet.gjstr(terminator), "a".repeat(len));
+                    assert_eq!(packet.pos, data.len());
+                }
+            }
+        }
+        let mut packet = Packet::from(&b"A\x00\x80\x81\x9f\xa0\xff\nb\0"[..]);
+        assert_eq!(packet.gjstr(10), "A\u{20ac}?\u{178}\u{a0}\u{ff}");
+        assert_eq!(packet.pos, 8);
+        assert_eq!(packet.gjstr(0), "b");
+        assert_eq!(packet.pos, 10);
+    }
+
+    #[test]
+    fn test_gsmart1or2_1() {
         let mut packet: Packet = Packet::new(1);
         packet.psmart1or2(69);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -782,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gsmart_2() {
+    fn test_gsmart1or2_2() {
         let mut packet: Packet = Packet::new(2);
         packet.psmart1or2(3454);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -790,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gsmarts_1() {
+    fn test_gsmart1or2s_1() {
         let mut packet: Packet = Packet::new(1);
         packet.psmart1or2s(-13);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -798,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gsmarts_2() {
+    fn test_gsmart1or2s_2() {
         let mut packet: Packet = Packet::new(2);
         packet.psmart1or2s(-3454);
         packet.pos = 0; // Resetting the packet for showing test case.
@@ -806,42 +931,42 @@ mod tests {
     }
 
     #[test]
-    fn test_psmart2or4_neg1() {
+    fn test_psmart2or4null_neg1() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4(-1);
+        packet.psmart2or4null(-1);
         packet.pos = 0;
-        assert_eq!(32767, packet.gsmart2or4());
+        assert_eq!(32767, packet.gsmart2or4s());
     }
 
     #[test]
-    fn test_psmart2or4_small() {
+    fn test_psmart2or4null_small() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4(100);
+        packet.psmart2or4null(100);
         packet.pos = 0;
-        assert_eq!(100, packet.gsmart2or4());
+        assert_eq!(100, packet.gsmart2or4s());
     }
 
     #[test]
-    fn test_psmart2or4_max_short() {
+    fn test_psmart2or4null_max_short() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4(32766);
+        packet.psmart2or4null(32766);
         packet.pos = 0;
-        assert_eq!(32766, packet.gsmart2or4());
+        assert_eq!(32766, packet.gsmart2or4s());
     }
 
     #[test]
-    fn test_psmart2or4_large() {
+    fn test_psmart2or4null_large() {
         let mut packet: Packet = Packet::new(4);
-        packet.psmart2or4(50000);
+        packet.psmart2or4null(50000);
         packet.pos = 0;
-        assert_eq!(50000, packet.gsmart2or4());
+        assert_eq!(50000, packet.gsmart2or4s());
     }
 
     #[test]
     #[should_panic]
-    fn test_psmart2or4_out_of_range() {
+    fn test_psmart2or4null_out_of_range() {
         let mut packet: Packet = Packet::new(4);
-        packet.psmart2or4(-2);
+        packet.psmart2or4null(-2);
     }
 
     #[test]
@@ -850,14 +975,6 @@ mod tests {
         let mut dest: Vec<u8> = vec![0u8; 3]; // Create a destination slice with enough space to copy 3 bytes
         packet.gdata(&mut dest, 1, 2); // Copy the first 3 bytes from the internal buffer to `dest`
         assert_eq!(dest, vec![0, 10, 20]); // Verify the correct data was copied
-    }
-
-    #[test]
-    fn test_p1_alt1() {
-        let mut packet = Packet::new(1);
-        packet.p1_alt1(100);
-        packet.pos = 0;
-        assert_eq!(100, packet.g1_alt1());
     }
 
     #[test]
@@ -877,27 +994,35 @@ mod tests {
     }
 
     #[test]
-    fn test_p2_alt1() {
-        let mut packet = Packet::new(2);
-        packet.p2_alt1(32767);
+    fn test_p1_alt1() {
+        let mut packet = Packet::new(1);
+        packet.p1_alt1(100);
         packet.pos = 0;
-        assert_eq!(32767, packet.g2_alt1());
+        assert_eq!(100, packet.g1_alt1());
     }
 
     #[test]
-    fn test_ip2_alt1() {
+    fn test_p2_alt2() {
         let mut packet = Packet::new(2);
-        packet.ip2_alt1(32767);
+        packet.p2_alt2(32767);
         packet.pos = 0;
-        assert_eq!(32767, packet.ig2_alt1());
+        assert_eq!(32767, packet.g2_alt2());
     }
 
     #[test]
-    fn test_ig2() {
+    fn test_p2_alt3() {
         let mut packet = Packet::new(2);
-        packet.ip2(65535);
+        packet.p2_alt3(32767);
         packet.pos = 0;
-        assert_eq!(65535, packet.ig2());
+        assert_eq!(32767, packet.g2_alt3());
+    }
+
+    #[test]
+    fn test_g2_alt1() {
+        let mut packet = Packet::new(2);
+        packet.p2_alt1(65535);
+        packet.pos = 0;
+        assert_eq!(65535, packet.g2_alt1());
     }
 
     #[test]
@@ -928,13 +1053,13 @@ mod tests {
         packet.pos += 4;
         packet.p4(2147483647);
         packet.psize4(4);
-        packet.pos = 0; // Resetting the packet for showing test case.
+        packet.pos = 0;
         assert_eq!(4, packet.g4s());
         assert_eq!(2147483647, packet.g4s());
     }
 
     #[test]
-    fn test_rsaenc() {
+    fn test_rsaencrypt() {
         let pem = r#"
         -----BEGIN PRIVATE KEY-----
         MIIBcgIBADANBgkqhkiG9w0BAQEFAASCAVwwggFYAgEAAkEAiMOHSKWCKPcmHNw0
@@ -951,15 +1076,15 @@ mod tests {
         let mut packet = Packet::new(65 + 1);
         packet.pjstr("hello", 0);
         packet.pjstr("world", 0);
-        packet.rsaenc(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
+        packet.rsaencrypt(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
         let mut result = Packet::from(packet.data);
-        result.rsadec(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
+        result.rsadecrypt(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
         assert_eq!("hello", result.gjstr(0));
         assert_eq!("world", result.gjstr(0));
     }
 
     #[test]
-    fn test_rsadec() {
+    fn test_rsadecrypt() {
         let pem = r#"
         -----BEGIN PRIVATE KEY-----
         MIIBcgIBADANBgkqhkiG9w0BAQEFAASCAVwwggFYAgEAAkEAiMOHSKWCKPcmHNw0
@@ -976,9 +1101,9 @@ mod tests {
         let mut packet = Packet::new(65 + 1);
         packet.pjstr("hello", 0);
         packet.pjstr("world", 0);
-        packet.rsaenc(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
+        packet.rsaencrypt(RsaFrame::Byte, key); // Uses modulus and exponent from the private key to encrypt (client).
         let mut result = Packet::from(packet.data);
-        result.rsadec(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
+        result.rsadecrypt(RsaFrame::Byte, key); // Uses CRT to decrypt (server).
         assert_eq!("hello", result.gjstr(0));
         assert_eq!("world", result.gjstr(0));
     }
