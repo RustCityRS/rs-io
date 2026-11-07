@@ -83,8 +83,8 @@ pub fn encode_master_index<'a>(
 ///   [whirlpool hashes — 64 bytes per group, present when whirlpooled flag set]
 ///   [versions — u32 per group]
 ///   [file counts — u16 per group (format < 7) or big_smart (format >= 7)]
-///   [file IDs per group — delta-encoded u16s or big_smarts]
-///   [file name hashes per group — i32, present when named flag set]
+///   [file IDs of every group — delta-encoded u16s or big_smarts]
+///   [file name hashes of every group, after all file IDs — i32, present when named flag set]
 pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
     let mut pkt = Packet::from(data);
 
@@ -172,34 +172,26 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
 
     // File IDs per group (delta-encoded)
     for group in &mut groups {
-        let fc = group.file_count as usize;
-        let mut file_ids = Vec::with_capacity(fc);
         let mut last_file_id = 0u32;
-        for _ in 0..fc {
+        for _ in 0..group.file_count {
             let delta = if format >= 7 {
                 pkt.gsmart2or4s() as u32
             } else {
                 pkt.g2() as u32
             };
             last_file_id += delta;
-            file_ids.push(last_file_id);
+            group.files.push(FileInfo {
+                id: last_file_id,
+                name_hash: None,
+            });
         }
+    }
 
-        // File name hashes (if named flag)
-        if named {
-            for fid in file_ids {
-                let name_hash = pkt.g4s();
-                group.files.push(FileInfo {
-                    id: fid,
-                    name_hash: Some(name_hash),
-                });
-            }
-        } else {
-            for fid in file_ids {
-                group.files.push(FileInfo {
-                    id: fid,
-                    name_hash: None,
-                });
+    // File name hashes (if named flag), once every group's file IDs are read
+    if named {
+        for group in &mut groups {
+            for file in &mut group.files {
+                file.name_hash = Some(pkt.g4s());
             }
         }
     }
@@ -311,12 +303,13 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
             }
             last_file_id = file.id;
         }
+    }
 
-        // File name hashes (0 = no name, matches Jagex default)
-        if table.named {
+    // File name hashes (0 = no name, matches Jagex default), after every group's file IDs
+    if table.named {
+        for group in &table.groups {
             for file in &group.files {
-                let hash = file.name_hash.unwrap_or(0);
-                out.p4(hash);
+                out.p4(file.name_hash.unwrap_or(0));
             }
         }
     }
@@ -371,6 +364,49 @@ mod tests {
         assert_eq!(
             encode_reference_table(&decoded),
             encode_reference_table(&table)
+        );
+    }
+
+    #[test]
+    fn named_tables_list_every_file_id_before_any_file_name() {
+        let group = |id, name_hash, files: [(u32, i32); 2]| GroupInfo {
+            id,
+            name_hash,
+            crc: 0,
+            whirlpool: None,
+            version: 0,
+            size: 0,
+            file_count: 2,
+            files: files
+                .iter()
+                .map(|&(id, hash)| FileInfo {
+                    id,
+                    name_hash: Some(hash),
+                })
+                .collect(),
+        };
+        let table = ReferenceTable {
+            archive_id: 23,
+            format: 5,
+            version: 0,
+            named: true,
+            whirlpooled: false,
+            groups: vec![group(0, 1, [(0, 2), (4, 3)]), group(3, 4, [(1, 5), (2, 6)])],
+        };
+        let bytes = encode_reference_table(&table);
+        let files = [0, 0, 0, 4, 0, 1, 0, 1];
+        let names = [0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 6];
+        assert_eq!(bytes[bytes.len() - 24..bytes.len() - 16], files);
+        assert_eq!(bytes[bytes.len() - 16..], names);
+        let decoded = parse_reference_table(&bytes).unwrap();
+        let read: Vec<_> = decoded
+            .groups
+            .iter()
+            .flat_map(|group| group.files.iter().map(|file| (file.id, file.name_hash)))
+            .collect();
+        assert_eq!(
+            read,
+            [(0, Some(2)), (4, Some(3)), (1, Some(5)), (2, Some(6))]
         );
     }
     use crate::js5::Js5Store;
