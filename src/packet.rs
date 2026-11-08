@@ -603,6 +603,20 @@ impl BitWriter {
         }
     }
 
+    /// [`pbit`](Self::pbit) for a width only known at run time, up to 56 bits.
+    #[inline(always)]
+    pub const fn pbits(&mut self, buf: &mut Packet, count: u32, val: u64) {
+        self.acc = (self.acc << count) | (val & ((1 << count) - 1));
+        self.bits += count;
+        while self.bits >= 8 {
+            self.bits -= 8;
+            unsafe {
+                *buf.data.as_mut_ptr().add(self.byte) = (self.acc >> self.bits) as u8;
+            }
+            self.byte += 1;
+        }
+    }
+
     #[inline(always)]
     pub const fn bitpos(&self) -> usize {
         (self.byte << 3) + self.bits as usize
@@ -623,7 +637,29 @@ impl BitWriter {
 
 #[cfg(test)]
 mod tests {
+    use super::BitWriter;
     use crate::Packet;
+
+    #[test]
+    fn pbits_writes_what_pbit_writes() {
+        let mut fixed = Packet::new(16);
+        let mut bits = BitWriter::new();
+        bits.pbit::<1>(&mut fixed, 1);
+        bits.pbit::<10>(&mut fixed, 0x2AB);
+        bits.pbit::<3>(&mut fixed, 0b111);
+        bits.pbit::<30>(&mut fixed, 0x2345_6789);
+        bits.pbit::<5>(&mut fixed, 0b10101);
+        bits.finish(&mut fixed);
+        let mut dynamic = Packet::new(16);
+        let mut bits = BitWriter::new();
+        bits.pbits(&mut dynamic, 1, 1);
+        bits.pbits(&mut dynamic, 10, 0x2AB);
+        bits.pbits(&mut dynamic, 33, (0b111 << 30) | 0x2345_6789);
+        bits.pbits(&mut dynamic, 0, 0);
+        bits.pbits(&mut dynamic, 5, 0b10101);
+        bits.finish(&mut dynamic);
+        assert_eq!(fixed.data[..fixed.pos], dynamic.data[..dynamic.pos]);
+    }
 
     #[test]
     fn varints_match_client_bytes() {
