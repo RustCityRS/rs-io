@@ -538,6 +538,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
+    pub fn pdata_alt1(&mut self, src: &[u8], offset: usize, length: usize) {
+        let dst = unsafe { self.data.as_mut().as_mut_ptr().add(self.pos) };
+        let end = unsafe { src.as_ptr().add(offset + length) };
+        for i in 0..length {
+            unsafe { *dst.add(i) = *end.sub(i + 1) };
+        }
+        self.pos += length;
+    }
+
+    #[inline(always)]
     pub fn psize1(&mut self, size: u8) {
         let pos = self.pos - size as usize - 1;
         unsafe { write_unaligned(self.data.as_mut().as_mut_ptr().add(pos), size.to_be()) };
@@ -830,6 +840,15 @@ mod tests {
         let src: Vec<u8> = vec![1, 2, 3, 4, 5];
         packet.pdata(&src, 1, 3); // Copies bytes 2, 3, and 4 from `src` into the packet's buffer
         assert_eq!(packet.data, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_pdata_alt1() {
+        let mut packet: Packet = Packet::new(4);
+        packet.p1(9);
+        packet.pdata_alt1(&[1, 2, 3, 4, 5], 1, 3);
+        assert_eq!(packet.pos, 4);
+        assert_eq!(packet.data, vec![9, 4, 3, 2]);
     }
 
     #[test]
