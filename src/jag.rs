@@ -231,8 +231,8 @@ impl JagFile {
                 buf.p3(unpacks[i]);
                 buf.p3(unpacks[i]);
             }
-            for i in 0..self.file_count {
-                let data = self.file_write[i].as_ref().expect("Missing file data");
+            for data in &self.file_write[..self.file_count] {
+                let data = data.as_ref().expect("Missing file data");
                 buf.pdata(data, 0, data.len());
             }
             let compressed = bz2_compress(&buf.data[..buf.pos], true);
@@ -243,8 +243,8 @@ impl JagFile {
             jag.data[..jag.pos].to_vec()
         } else {
             let mut compressed_entries: Vec<Vec<u8>> = Vec::with_capacity(self.file_count);
-            for i in 0..self.file_count {
-                let data = self.file_write[i].as_ref().expect("Missing file data");
+            for data in &self.file_write[..self.file_count] {
+                let data = data.as_ref().expect("Missing file data");
                 compressed_entries.push(bz2_compress(data, true));
             }
             let compressed_size: usize = compressed_entries.iter().map(|c| c.len()).sum();
