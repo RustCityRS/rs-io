@@ -11,7 +11,7 @@
 
 ----
 
-# rs-io — Protocol I/O, Jag, Js5, CRC & Compression
+# rs-io
 
 Low-level binary I/O library for the RuneScape protocol. Provides fixed-size packet buffers with bit-level operations,
 RSA encryption, bzip2 compression, CRC-32 checksums, and Jag archive file handling.
@@ -54,7 +54,7 @@ RSA encryption, bzip2 compression, CRC-32 checksums, and Jag archive file handli
 │  │  pos: usize (byte cursor)                        │   │
 │  │                                                  │   │
 │  │  Write: p1 p2 p3 p4 p8 pjstr pdata               │   │
-│  │  Read: g1 g1s g2 g2s g3 g4s g8s gjstr             │   │
+│  │  Read: g1 g1s g2 g2s g3 g4s g8s gjstr            │   │
 │  │  Smarts: psmart1or2 gsmart1or2 psmart2or4null    │   │
 │  │  Varints: pvarint gmidivarlen                    │   │
 │  │  ALT: p1_alt1/2/3 p2_alt2/3 p4_alt2/3            │   │
@@ -122,11 +122,11 @@ All write methods advance `pos` by the number of bytes written.
 | `p1_alt1(u8)`            | 1     | Plus 128           | Write `(value + 128)`     |
 | `p2(u16)`                | 2     | Big-endian         | Unsigned 16-bit           |
 | `p2_alt2(u16)`           | 2     | BE, lo+128         | `[hi, lo+128]`            |
-| `p2_alt1(u16)`               | 2     | Little-endian      | Unsigned 16-bit           |
-| `p2_alt3(u16)`          | 2     | LE, lo+128         | `[lo+128, hi]`            |
+| `p2_alt1(u16)`           | 2     | Little-endian      | Unsigned 16-bit           |
+| `p2_alt3(u16)`           | 2     | LE, lo+128         | `[lo+128, hi]`            |
 | `p3(i32)`                | 3     | Big-endian         | Lower 24 bits             |
 | `p4(i32)`                | 4     | Big-endian         | Signed 32-bit             |
-| `p4_alt1(i32)`               | 4     | Little-endian      | Signed 32-bit             |
+| `p4_alt1(i32)`           | 4     | Little-endian      | Signed 32-bit             |
 | `p8(i64)`                | 8     | Big-endian         | Signed 64-bit             |
 | `pjstr(&str, u8)`        | var   | UTF-8 + terminator | Null/10-terminated string |
 | `pdata(&[u8], off, len)` | var   | Raw copy           | Bulk data write           |
@@ -145,12 +145,12 @@ All read methods advance `pos` by the number of bytes read.
 | `g2()`                       | 2     | `u16`    | BE unsigned 16-bit     |
 | `g2s()`                      | 2     | `i16`    | BE signed 16-bit       |
 | `g2_alt2()`                  | 2     | `u16`    | BE, lo-128             |
-| `g2_alt1()`                      | 2     | `u16`    | LE unsigned 16-bit     |
-| `g2s_alt1()`                     | 2     | `i16`    | LE signed 16-bit       |
-| `g2_alt3()`                 | 2     | `u16`    | LE, lo-128             |
+| `g2_alt1()`                  | 2     | `u16`    | LE unsigned 16-bit     |
+| `g2s_alt1()`                 | 2     | `i16`    | LE signed 16-bit       |
+| `g2_alt3()`                  | 2     | `u16`    | LE, lo-128             |
 | `g3()`                       | 3     | `i32`    | BE 24-bit as i32       |
 | `g4s()`                      | 4     | `i32`    | BE signed 32-bit       |
-| `g4s_alt1()`                     | 4     | `i32`    | LE signed 32-bit       |
+| `g4s_alt1()`                 | 4     | `i32`    | LE signed 32-bit       |
 | `g8s()`                      | 8     | `i64`    | BE signed 64-bit       |
 | `gjstr(u8)`                  | var   | `String` | Read until terminator  |
 | `gdata(&mut [u8], off, len)` | var   | —        | Bulk data read         |
@@ -239,11 +239,11 @@ buf.psize2(len as u16); // writes the payload length at start
 
 The argument is the payload length; these methods leave `pos` unchanged.
 
-| Method             | Header Size | Header Position         |
-|--------------------|-------------|-------------------------|
-| `psize1(size: u8)`  | 1 byte      | `self.pos - size - 1`    |
-| `psize2(size: u16)` | 2 bytes, BE | `self.pos - size - 2`    |
-| `psize4(size: i32)` | 4 bytes, BE | `self.pos - size - 4`    |
+| Method              | Header Size | Header Position       |
+|---------------------|-------------|-----------------------|
+| `psize1(size: u8)`  | 1 byte      | `self.pos - size - 1` |
+| `psize2(size: u16)` | 2 bytes, BE | `self.pos - size - 2` |
+| `psize4(size: i32)` | 4 bytes, BE | `self.pos - size - 4` |
 
 ---
 
@@ -467,12 +467,12 @@ rs-io/
 
 ### Dependencies
 
-| Crate        | Version   | Purpose                              |
-|--------------|-----------|--------------------------------------|
-| `rs-crypto`  | 0.3       | RSA operations, XTEA and Whirlpool   |
-| `crc32fast`  | 1         | Accelerated IEEE CRC-32              |
-| `memchr`     | 2         | Packet string terminator scanning    |
-| `lzma-rs`    | 0.3       | LZMA container compression           |
-| `thiserror`  | 2         | Cache errors                         |
-| `tracing`    | 0.1       | Cache diagnostics                    |
-| `cc`         | 1.2       | C compiler integration (build-time)  |
+| Crate       | Version | Purpose                             |
+|-------------|---------|-------------------------------------|
+| `rs-crypto` | 0.3     | RSA operations, XTEA and Whirlpool  |
+| `crc32fast` | 1       | Accelerated IEEE CRC-32             |
+| `memchr`    | 2       | Packet string terminator scanning   |
+| `lzma-rs`   | 0.3     | LZMA container compression          |
+| `thiserror` | 2       | Cache errors                        |
+| `tracing`   | 0.1     | Cache diagnostics                   |
+| `cc`        | 1.2     | C compiler integration (build-time) |
