@@ -55,8 +55,8 @@ RSA encryption, bzip2 compression, CRC-32 checksums, and Jag archive file handli
 │  │                                                  │   │
 │  │  Write: p1 p2 p3 p4 p8 pjstr pdata               │   │
 │  │  Read: g1 g1s g2 g2s g3 g4s g8s gjstr            │   │
-│  │  Smarts: psmart1or2 gsmart1or2 psmart2or4null    │   │
-│  │  Varints: pvarint gmidivarlen                    │   │
+│  │  Smarts: psmart1or2 gsmart1or2 psmartint2        │   │
+│  │  Varints: pmidivarlen gmidivarlen                │   │
 │  │  ALT: p1_alt1/2/3 p2_alt2/3 p4_alt2/3            │   │
 │  │  RSA: rsaencrypt rsadecrypt                      │   │
 │  │  Bit output: BitWriter                           │   │
@@ -150,7 +150,7 @@ All read methods advance `pos` by the number of bytes read.
 | `g2_alt3()`                  | 2     | `u16`    | LE, lo-128             |
 | `g3()`                       | 3     | `i32`    | BE 24-bit as i32       |
 | `g4s()`                      | 4     | `i32`    | BE signed 32-bit       |
-| `g4s_alt1()`                 | 4     | `i32`    | LE signed 32-bit       |
+| `g4_alt1()`                  | 4     | `i32`    | LE signed 32-bit       |
 | `g8s()`                      | 8     | `i64`    | BE signed 64-bit       |
 | `gjstr(u8)`                  | var   | `String` | Read until terminator  |
 | `gdata(&mut [u8], off, len)` | var   | —        | Bulk data read         |
@@ -333,7 +333,7 @@ Final output = min(strategy1.len(), strategy2.len())
 
 ## JS5 Cache Stores
 
-`js5::Js5Store` reads and writes the sector stores used by `main_file_cache.dat` and
+`js5::Js5LocalCache` reads and writes the sector stores used by `main_file_cache.dat` and
 `main_file_cache.dat2`. `open(path)` detects the format; `create(path, archive_ids)`
 creates or opens a dat2 store. Legacy archive 0 contains JAGs and its ondemand
 archives contain gzip streams. Dat2 groups use JS5 compression containers.
@@ -348,9 +348,9 @@ output buffer in linear passes over the chunk table. `compression::decompress` r
 `Cow<[u8]>`, borrowing uncompressed payloads and owning decompressed ones.
 
 ```rust,no_run
-use rs_io::js5::Js5Store;
+use rs_io::js5::Js5LocalCache;
 
-let mut cache = Js5Store::open("cache")?;
+let mut cache = Js5LocalCache::open("cache")?;
 let raw = cache.read_raw_group_bytes(5, 0)?;
 let group = cache.read_group(2, 0)?;
 # Ok::<(), rs_io::js5::CacheError>(())
@@ -362,12 +362,12 @@ Whirlpool hashes and network transfers. `js5::reference` reads and writes archiv
 reference tables. `encode_master_index` builds the Whirlpool-signed master-index container from
 reference-table bytes and versions in archive order. Archive IDs and packing policies are supplied by the caller.
 
-`Packet::gmidivarlen` and `Packet::pvarint` read and write unsigned integers with the most-significant
+`Packet::gmidivarlen` and `Packet::pmidivarlen` read and write unsigned integers with the most-significant
 seven-bit group first, as used by MIDI and Jagex MIDI streams. Callers validate input boundaries.
 `Packet<T = Vec<u8>>` also accepts borrowed byte slices and fixed arrays, so asset parsers and
 packers reuse the same byte operations without copying buffers. Method names follow
 [osrs-cache Packet.java](https://github.com/zwyz/osrs-cache/blob/master/src/main/java/osrs/util/Packet.java)
-with lowercase Rust spelling, including `sizejstr`, `pvarint`, `gmidivarlen` and signed
+with lowercase Rust spelling, including `sizejstr`, `pmidivarlen`, `gmidivarlen` and signed
 reads such as `g1s`, `g2s`, `g4s` and `g8s`.
 
 `zip::fflate` writes deterministic stored ZIPs from an iterator of names and

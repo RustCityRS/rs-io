@@ -1,4 +1,4 @@
-use crate::cp1252::{decode, encode_utf8_to_cp1252};
+use crate::stringtools::{decode, encode_utf8_to_cp1252};
 use memchr::memchr;
 use rs_crypto::rsa::RsaKey;
 use std::fs;
@@ -81,7 +81,7 @@ impl<T> Packet<T> {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     #[inline(always)]
-    pub fn remaining(&self) -> i32 {
+    pub fn get_space(&self) -> i32 {
         (self.len() - self.pos) as i32
     }
 
@@ -165,7 +165,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     // java ints are always signed (java 8 added unsigned)
     #[inline(always)]
-    pub fn g4s_alt1(&mut self) -> i32 {
+    pub fn g4_alt1(&mut self) -> i32 {
         let val = i32::from_le(unsafe {
             read_unaligned(self.data.as_ref().as_ptr().add(self.pos) as *const i32)
         });
@@ -220,7 +220,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn g4s_alt3(&mut self) -> i32 {
+    pub fn g4_alt3(&mut self) -> i32 {
         let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
         self.pos += 4;
         ((unsafe { *ptr } as i32) << 16)
@@ -230,7 +230,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn g4s_alt2(&mut self) -> i32 {
+    pub fn g4_alt2(&mut self) -> i32 {
         let ptr = unsafe { self.data.as_ref().as_ptr().add(self.pos) };
         self.pos += 4;
         ((unsafe { *ptr } as i32) << 8)
@@ -270,7 +270,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn gsmart2or4s(&mut self) -> i32 {
+    pub fn gsmart2or4(&mut self) -> i32 {
         if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
             self.g2() as i32
         } else {
@@ -279,7 +279,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn gsmart2or4null(&mut self) -> i32 {
+    pub fn gsmart2or4s(&mut self) -> i32 {
         if unsafe { *self.data.as_ref().as_ptr().add(self.pos) } < 128 {
             let value = self.g2();
             if value == 32767 { -1 } else { value as i32 }
@@ -300,7 +300,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn gextended1or2(&mut self) -> i32 {
+    pub fn gsmartsextend(&mut self) -> i32 {
         let mut acc = 0;
         let mut val = self.gsmart1or2();
         while val == 32767 {
@@ -495,9 +495,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn psmart2or4null(&mut self, value: i32) {
+    pub fn psmartint2(&mut self, value: i32) {
         if value < -1 {
-            panic!("Error psmart2or4null out of range: {value}");
+            panic!("Error psmartint2 out of range: {value}");
         } else if value == -1 {
             self.p2(32767);
         } else if value < 32767 {
@@ -509,7 +509,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn pvarint(&mut self, value: u32) {
+    pub fn pmidivarlen(&mut self, value: u32) {
         if value & 0xffffff80 != 0 {
             if value & 0xffffc000 != 0 {
                 if value & 0xffe00000 != 0 {
@@ -686,7 +686,7 @@ mod tests {
             let mut data = [42; 7];
             let mut out = Packet::from(&mut data[..]);
             out.pos = 1;
-            out.pvarint(value);
+            out.pmidivarlen(value);
             assert_eq!(out.pos, wire.len() + 1);
             assert_eq!(&data[1..wire.len() + 1], wire);
             assert_eq!(data[0], 42);
@@ -720,8 +720,8 @@ mod tests {
         assert_eq!(buf.g1_alt3(), 0x12);
         assert_eq!(buf.g2_alt2(), 0x1234);
         assert_eq!(buf.g2_alt3(), 0x1234);
-        assert_eq!(buf.g4s_alt2(), 0x12345678);
-        assert_eq!(buf.g4s_alt3(), 0x12345678);
+        assert_eq!(buf.g4_alt2(), 0x12345678);
+        assert_eq!(buf.g4_alt3(), 0x12345678);
         for value in 0..=255 {
             buf.pos = 0;
             buf.p1_alt2(value);
@@ -782,7 +782,7 @@ mod tests {
         let mut packet: Packet = Packet::new(4);
         packet.p4_alt1(2147483647);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(2147483647, packet.g4s_alt1());
+        assert_eq!(2147483647, packet.g4_alt1());
     }
 
     #[test]
@@ -912,7 +912,7 @@ mod tests {
         let mut packet: Packet = Packet::new(4);
         packet.p4_alt1(2147483647);
         packet.pos = 0; // Resetting the packet for showing test case.
-        assert_eq!(2147483647, packet.g4s_alt1());
+        assert_eq!(2147483647, packet.g4_alt1());
     }
 
     #[test]
@@ -988,40 +988,40 @@ mod tests {
     #[test]
     fn test_psmart2or4null_neg1() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4null(-1);
+        packet.psmartint2(-1);
         packet.pos = 0;
-        assert_eq!(32767, packet.gsmart2or4s());
+        assert_eq!(32767, packet.gsmart2or4());
     }
 
     #[test]
     fn test_psmart2or4null_small() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4null(100);
+        packet.psmartint2(100);
         packet.pos = 0;
-        assert_eq!(100, packet.gsmart2or4s());
+        assert_eq!(100, packet.gsmart2or4());
     }
 
     #[test]
     fn test_psmart2or4null_max_short() {
         let mut packet: Packet = Packet::new(2);
-        packet.psmart2or4null(32766);
+        packet.psmartint2(32766);
         packet.pos = 0;
-        assert_eq!(32766, packet.gsmart2or4s());
+        assert_eq!(32766, packet.gsmart2or4());
     }
 
     #[test]
     fn test_psmart2or4null_large() {
         let mut packet: Packet = Packet::new(4);
-        packet.psmart2or4null(50000);
+        packet.psmartint2(50000);
         packet.pos = 0;
-        assert_eq!(50000, packet.gsmart2or4s());
+        assert_eq!(50000, packet.gsmart2or4());
     }
 
     #[test]
     #[should_panic]
     fn test_psmart2or4null_out_of_range() {
         let mut packet: Packet = Packet::new(4);
-        packet.psmart2or4null(-2);
+        packet.psmartint2(-2);
     }
 
     #[test]

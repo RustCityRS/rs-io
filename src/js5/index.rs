@@ -1,7 +1,3 @@
-//! Reference table parsing
-//!
-//! Reference tables (stored in archive 255) contain metadata about groups in other archives.
-
 use super::Result;
 use crate::Packet;
 use crate::crc::getcrc;
@@ -9,14 +5,14 @@ use rs_crypto::rsa::RsaKey;
 use rs_crypto::whirlpool;
 use tracing::trace;
 
-/// A reference table containing metadata about an archive
+/// An archive's index: metadata about its groups
 #[derive(Debug, Clone)]
-pub struct ReferenceTable {
+pub struct Js5Index {
     pub archive_id: u8,
     pub format: u8,
-    pub version: u32,
+    pub index_version: u32,
     pub named: bool,
-    pub whirlpooled: bool,
+    pub has_group_whirlpools: bool,
     pub groups: Vec<GroupInfo>,
 }
 
@@ -40,7 +36,7 @@ pub struct FileInfo {
     pub name_hash: Option<i32>,
 }
 
-/// Encodes a Whirlpool-signed master-index container from reference tables and versions in archive order.
+/// Encodes a Whirlpool-signed master-index container from indexes and versions in archive order.
 pub fn encode_master_index<'a>(
     archives: impl ExactSizeIterator<Item = (&'a [u8], u32)>,
     private_key: &RsaKey,
@@ -71,41 +67,43 @@ pub fn encode_master_index<'a>(
     out.data
 }
 
-/// Parse a reference table from raw data.
+/// Parse an index from raw data.
 ///
-/// Reference table format (all versions):
+/// Index format (all versions):
 ///   u8:  format version (5, 6, or 7)
-///   u8:  flags  (0x01=named, 0x02=whirlpooled, 0x04=sizes)
+///   [index version — u32 (format >= 6)]
+///   u8:  flags  (0x01=named, 0x02=group whirlpools, 0x04=group sizes, 0x08=extra u32 per group)
 ///   u16: group count (format < 7)  OR  big_smart (format >= 7)
 ///   [group IDs — delta-encoded u16s (format < 7) or big_smarts (format >= 7)]
 ///   [name hashes — i32 per group, present when named flag set]
 ///   [CRC values — u32 per group]
-///   [whirlpool hashes — 64 bytes per group, present when whirlpooled flag set]
+///   [u32 per group, present when flag 0x08 set; unused]
+///   [whirlpool hashes — 64 bytes per group, present when flag 0x02 set]
+///   [packed and unpacked sizes — 2 x u32 per group, present when flag 0x04 set; unused]
 ///   [versions — u32 per group]
 ///   [file counts — u16 per group (format < 7) or big_smart (format >= 7)]
 ///   [file IDs of every group — delta-encoded u16s or big_smarts]
 ///   [file name hashes of every group, after all file IDs — i32, present when named flag set]
-pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
+pub fn load_index(data: &[u8]) -> Result<Js5Index> {
     let mut pkt = Packet::from(data);
 
     let format = pkt.g1();
 
     // For format >= 6, a 4-byte version field precedes the flags byte
-    let version = if format >= 6 { pkt.g4s() as u32 } else { 0 };
+    let index_version = if format >= 6 { pkt.g4s() as u32 } else { 0 };
 
-    // flags byte: 0x01=named, 0x02=whirlpooled, 0x04=sizes
     let flags = pkt.g1();
     let named = (flags & 0x01) != 0;
-    let whirlpooled = (flags & 0x02) != 0;
+    let has_group_whirlpools = (flags & 0x02) != 0;
 
     let group_count = if format >= 7 {
-        pkt.gsmart2or4s() as u32
+        pkt.gsmart2or4() as u32
     } else {
         pkt.g2() as u32
     };
 
     trace!(
-        "Parsing reference table: format={}, flags={:#04x}, groups={}",
+        "Parsing index: format={}, flags={:#04x}, groups={}",
         format, flags, group_count
     );
 
@@ -114,7 +112,7 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
     let mut last_id = 0u32;
     for _ in 0..group_count {
         let delta = if format >= 7 {
-            pkt.gsmart2or4s() as u32
+            pkt.gsmart2or4() as u32
         } else {
             pkt.g2() as u32
         };
@@ -132,14 +130,22 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
     // CRC values
     let group_crcs: Vec<u32> = (0..group_count).map(|_| pkt.g4s() as u32).collect();
 
-    // Whirlpool hashes (if whirlpooled flag)
+    if (flags & 0x08) != 0 {
+        pkt.pos += group_count as usize * 4;
+    }
+
+    // Whirlpool hashes (if has_group_whirlpools flag)
     let mut group_whirlpools: Vec<Option<[u8; 64]>> = vec![None; group_count as usize];
-    if whirlpooled {
+    if has_group_whirlpools {
         for wp in group_whirlpools.iter_mut() {
             let mut hash = [0u8; 64];
             pkt.gdata(&mut hash, 0, 64);
             *wp = Some(hash);
         }
+    }
+
+    if (flags & 0x04) != 0 {
+        pkt.pos += group_count as usize * 8;
     }
 
     // Versions
@@ -149,7 +155,7 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
     let group_file_counts: Vec<u32> = (0..group_count)
         .map(|_| {
             if format >= 7 {
-                pkt.gsmart2or4s() as u32
+                pkt.gsmart2or4() as u32
             } else {
                 pkt.g2() as u32
             }
@@ -175,7 +181,7 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
         let mut last_file_id = 0u32;
         for _ in 0..group.file_count {
             let delta = if format >= 7 {
-                pkt.gsmart2or4s() as u32
+                pkt.gsmart2or4() as u32
             } else {
                 pkt.g2() as u32
             };
@@ -196,18 +202,18 @@ pub fn parse_reference_table(data: &[u8]) -> Result<ReferenceTable> {
         }
     }
 
-    Ok(ReferenceTable {
+    Ok(Js5Index {
         archive_id: 0, // Set by caller
         format,
-        version,
+        index_version,
         named,
-        whirlpooled,
+        has_group_whirlpools,
         groups,
     })
 }
 
-/// Encode a reference table back to binary format.
-pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
+/// Encode a index back to binary format.
+pub fn encode_index(table: &Js5Index) -> Vec<u8> {
     let capacity = 10
         + table
             .groups
@@ -221,7 +227,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
 
     // Version field (format >= 6)
     if table.format >= 6 {
-        out.p4(table.version as i32);
+        out.p4(table.index_version as i32);
     }
 
     // Flags
@@ -229,7 +235,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
     if table.named {
         flags |= 0x01;
     }
-    if table.whirlpooled {
+    if table.has_group_whirlpools {
         flags |= 0x02;
     }
     out.p1(flags);
@@ -237,7 +243,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
     // Group count
     let gc = table.groups.len() as u32;
     if table.format >= 7 {
-        out.psmart2or4null(gc as i32);
+        out.psmartint2(gc as i32);
     } else {
         out.p2(gc as u16);
     }
@@ -247,7 +253,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
     for group in &table.groups {
         let delta = group.id - last_id;
         if table.format >= 7 {
-            out.psmart2or4null(delta as i32);
+            out.psmartint2(delta as i32);
         } else {
             out.p2(delta as u16);
         }
@@ -267,7 +273,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
     }
 
     // Whirlpool hashes
-    if table.whirlpooled {
+    if table.has_group_whirlpools {
         for group in &table.groups {
             if let Some(wp) = &group.whirlpool {
                 out.pdata(wp, 0, 64);
@@ -285,7 +291,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
     // File counts
     for group in &table.groups {
         if table.format >= 7 {
-            out.psmart2or4null(group.file_count as i32);
+            out.psmartint2(group.file_count as i32);
         } else {
             out.p2(group.file_count as u16);
         }
@@ -297,7 +303,7 @@ pub fn encode_reference_table(table: &ReferenceTable) -> Vec<u8> {
         for file in &group.files {
             let delta = file.id - last_file_id;
             if table.format >= 7 {
-                out.psmart2or4null(delta as i32);
+                out.psmartint2(delta as i32);
             } else {
                 out.p2(delta as u16);
             }
@@ -324,12 +330,12 @@ mod tests {
 
     #[test]
     fn format_seven_uses_two_or_four_byte_smarts() {
-        let table = ReferenceTable {
+        let table = Js5Index {
             archive_id: 2,
             format: 7,
-            version: 1,
+            index_version: 1,
             named: false,
-            whirlpooled: false,
+            has_group_whirlpools: false,
             groups: vec![GroupInfo {
                 id: 32767,
                 name_hash: -1,
@@ -350,7 +356,7 @@ mod tests {
                 ],
             }],
         };
-        let bytes = encode_reference_table(&table);
+        let bytes = encode_index(&table);
         assert_eq!(
             bytes,
             [
@@ -358,13 +364,24 @@ mod tests {
                 2, 0, 0, 0x80, 1, 0, 0
             ]
         );
-        let decoded = parse_reference_table(&bytes).unwrap();
+        let decoded = load_index(&bytes).unwrap();
         assert_eq!(decoded.groups[0].id, 32767);
         assert_eq!(decoded.groups[0].files[1].id, 65536);
-        assert_eq!(
-            encode_reference_table(&decoded),
-            encode_reference_table(&table)
-        );
+        assert_eq!(encode_index(&decoded), encode_index(&table));
+    }
+
+    #[test]
+    fn group_size_and_extra_flags_are_skipped() {
+        let bytes = [
+            7, 0, 0, 0, 9, 0x0C, 0, 1, 0, 5, 0x12, 0x34, 0x56, 0x78, 0xAA, 0xAA, 0xAA, 0xAA, 0, 0,
+            1, 0, 0, 0, 2, 0, 0, 0, 0, 3, 0, 1, 0, 0,
+        ];
+        let table = load_index(&bytes).unwrap();
+        assert_eq!(table.index_version, 9);
+        assert_eq!(table.groups[0].id, 5);
+        assert_eq!(table.groups[0].crc, 0x12345678);
+        assert_eq!(table.groups[0].version, 3);
+        assert_eq!(table.groups[0].file_count, 1);
     }
 
     #[test]
@@ -385,20 +402,20 @@ mod tests {
                 })
                 .collect(),
         };
-        let table = ReferenceTable {
+        let table = Js5Index {
             archive_id: 23,
             format: 5,
-            version: 0,
+            index_version: 0,
             named: true,
-            whirlpooled: false,
+            has_group_whirlpools: false,
             groups: vec![group(0, 1, [(0, 2), (4, 3)]), group(3, 4, [(1, 5), (2, 6)])],
         };
-        let bytes = encode_reference_table(&table);
+        let bytes = encode_index(&table);
         let files = [0, 0, 0, 4, 0, 1, 0, 1];
         let names = [0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 6];
         assert_eq!(bytes[bytes.len() - 24..bytes.len() - 16], files);
         assert_eq!(bytes[bytes.len() - 16..], names);
-        let decoded = parse_reference_table(&bytes).unwrap();
+        let decoded = load_index(&bytes).unwrap();
         let read: Vec<_> = decoded
             .groups
             .iter()
@@ -409,7 +426,7 @@ mod tests {
             [(0, Some(2)), (4, Some(3)), (1, Some(5)), (2, Some(6))]
         );
     }
-    use crate::js5::Js5Store;
+    use crate::js5::Js5LocalCache;
     use rs_crypto::rsa::parse_rsa_key_from_pem;
     use std::fs;
     use std::path::Path;
@@ -422,38 +439,37 @@ mod tests {
         assert_eq!(pkt.g4s() as u32, 0x04050607);
     }
 
-    /// Round-trip test: decode reference table from real cache → encode → compare bytes.
+    /// Round-trip test: decode index from real cache → encode → compare bytes.
     /// Verifies that our encoder produces byte-identical output to the original cache data.
     #[test]
-    fn test_reference_table_roundtrip_archive2() {
+    fn test_index_roundtrip_archive2() {
         let cache_dir = Path::new("../cache");
         if !cache_dir.exists() {
-            eprintln!("Skipping reference table round-trip test (no cache directory)");
+            eprintln!("Skipping index round-trip test (no cache directory)");
             return;
         }
 
-        let mut store = Js5Store::open(cache_dir).expect("Failed to open cache");
+        let mut store = Js5LocalCache::open(cache_dir).expect("Failed to open cache");
 
         // Archive 2 = CONFIG — the one we'll be writing to
         let raw_decompressed = store
             .read_group_raw_decompressed(255, 2)
-            .expect("Failed to read archive 2 reference table")
-            .expect("Archive 2 reference table not found");
+            .expect("Failed to read archive 2 index")
+            .expect("Archive 2 index not found");
 
         // Parse
-        let table = parse_reference_table(&raw_decompressed)
-            .expect("Failed to parse archive 2 reference table");
+        let table = load_index(&raw_decompressed).expect("Failed to parse archive 2 index");
 
         eprintln!(
-            "Archive 2: format={} named={} whirlpooled={} groups={}",
+            "Archive 2: format={} named={} has_group_whirlpools={} groups={}",
             table.format,
             table.named,
-            table.whirlpooled,
+            table.has_group_whirlpools,
             table.groups.len()
         );
 
         // Encode back
-        let re_encoded = encode_reference_table(&table);
+        let re_encoded = encode_index(&table);
 
         // Diagnostic: find first mismatch
         if raw_decompressed.len() != re_encoded.len() {
@@ -487,21 +503,21 @@ mod tests {
         assert_eq!(
             &raw_decompressed[..],
             &re_encoded[..],
-            "Reference table bytes don't match after round-trip"
+            "Index bytes don't match after round-trip"
         );
     }
 
-    /// Round-trip ALL reference tables (archives 0-40) to verify the encoder
+    /// Round-trip ALL indexes (archives 0-40) to verify the encoder
     /// handles every format variant in our cache.
     #[test]
-    fn test_reference_table_roundtrip_all() {
+    fn test_index_roundtrip_all() {
         let cache_dir = Path::new("../cache");
         if !cache_dir.exists() {
-            eprintln!("Skipping reference table round-trip test (no cache directory)");
+            eprintln!("Skipping index round-trip test (no cache directory)");
             return;
         }
 
-        let mut store = Js5Store::open(cache_dir).expect("Failed to open cache");
+        let mut store = Js5LocalCache::open(cache_dir).expect("Failed to open cache");
 
         let mut tested = 0;
         let mut failed = Vec::new();
@@ -509,10 +525,10 @@ mod tests {
             let Ok(Some(raw)) = store.read_group_raw_decompressed(255, archive_id as u32) else {
                 continue;
             };
-            let Ok(table) = parse_reference_table(&raw) else {
+            let Ok(table) = load_index(&raw) else {
                 continue;
             };
-            let re_encoded = encode_reference_table(&table);
+            let re_encoded = encode_index(&table);
             if raw.len() != re_encoded.len() || raw[..] != re_encoded[..] {
                 failed.push(archive_id);
             }
@@ -521,21 +537,18 @@ mod tests {
 
         assert!(
             failed.is_empty(),
-            "Reference table round-trip failed for archives: {:?} ({} of {} tested)",
+            "Index round-trip failed for archives: {:?} ({} of {} tested)",
             failed,
             failed.len(),
             tested
         );
-        assert!(
-            tested > 0,
-            "No reference tables tested (cache may be empty)"
-        );
-        eprintln!("Successfully round-tripped {} reference tables", tested);
+        assert!(tested > 0, "No indexes tested (cache may be empty)");
+        eprintln!("Successfully round-tripped {} indexes", tested);
     }
 
-    /// Full write pipeline test: copy cache → write reference table → read back → verify.
+    /// Full write pipeline test: copy cache → write index → read back → verify.
     #[test]
-    fn test_write_reference_table_roundtrip() {
+    fn test_write_index_roundtrip() {
         let cache_dir = Path::new("../cache");
         if !cache_dir.exists() {
             eprintln!("Skipping write test (no cache directory)");
@@ -556,31 +569,31 @@ mod tests {
             fs::copy(entry.path(), &dest).unwrap();
         }
 
-        // Read original reference table for archive 2
-        let mut store = Js5Store::open(&tmp).expect("Failed to open temp cache");
+        // Read original index for archive 2
+        let mut store = Js5LocalCache::open(&tmp).expect("Failed to open temp cache");
         let original_raw = store.read_group_raw_decompressed(255, 2).unwrap().unwrap();
-        let table = parse_reference_table(&original_raw).unwrap();
+        let table = load_index(&original_raw).unwrap();
 
         // Write it back (compress + write to archive 255)
-        store.write_reference_table(2, &table).unwrap();
+        store.write_index(2, &table).unwrap();
 
         // Read it back and verify
         drop(store);
-        let mut store2 = Js5Store::open(&tmp).expect("Failed to reopen temp cache");
+        let mut store2 = Js5LocalCache::open(&tmp).expect("Failed to reopen temp cache");
         let readback = store2.read_group_raw_decompressed(255, 2).unwrap().unwrap();
 
         assert_eq!(
             &original_raw[..],
             &readback[..],
-            "Reference table changed after write-read round-trip"
+            "Index changed after write-read round-trip"
         );
 
         let _ = fs::remove_dir_all(&tmp);
-        eprintln!("Write reference table round-trip: PASSED");
+        eprintln!("Write index round-trip: PASSED");
     }
 
     #[test]
-    fn master_index_signature_matches_the_served_reference_tables() {
+    fn master_index_signature_matches_the_served_indexes() {
         const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCdQzsEvIb5dBQ3
 XzRy+69J5EnVsgZehslAlxWbhUgbO6eF4BHXT5Y+9r8/wY7AefZzGWgzNyHwxm1w

@@ -4,7 +4,7 @@ const TABLE: [char; 32] = [
 ];
 
 #[inline(always)]
-pub(crate) const fn encode(cp: u32) -> u8 {
+pub(crate) const fn wide_to_cp1252(cp: u32) -> u8 {
     match cp {
         0x01..=0x7F | 0xA0..=0xFF => cp as u8,
         0x20AC => 128, // €
@@ -64,12 +64,12 @@ pub(crate) fn decode(src: &[u8], offset: usize, len: usize) -> String {
 }
 
 #[inline]
-pub fn decode_string(bytes: &[u8]) -> String {
+pub fn cp1252_to_utf8(bytes: &[u8]) -> String {
     decode(bytes, 0, bytes.len())
 }
 
 #[inline]
-pub fn encode_string(s: &str) -> Vec<u8> {
+pub fn utf8_to_cp1252(s: &str) -> Vec<u8> {
     let bytes = s.as_bytes();
     if s.is_ascii() {
         return bytes.to_vec();
@@ -99,24 +99,33 @@ pub(crate) const unsafe fn encode_utf8_to_cp1252(
                 pos += 1;
             } else if byte < 0xE0 {
                 let cp = ((byte as u32 & 0x1F) << 6) | (*src.add(pos + 1) as u32 & 0x3F);
-                *dst.add(out) = encode(cp);
+                *dst.add(out) = wide_to_cp1252(cp);
                 pos += 2;
             } else if byte < 0xF0 {
                 let cp = ((byte as u32 & 0x0F) << 12)
                     | ((*src.add(pos + 1) as u32 & 0x3F) << 6)
                     | (*src.add(pos + 2) as u32 & 0x3F);
-                *dst.add(out) = encode(cp);
+                *dst.add(out) = wide_to_cp1252(cp);
                 pos += 3;
             } else {
                 let cp = ((byte as u32 & 0x07) << 18)
                     | ((*src.add(pos + 1) as u32 & 0x3F) << 12)
                     | ((*src.add(pos + 2) as u32 & 0x3F) << 6)
                     | (*src.add(pos + 3) as u32 & 0x3F);
-                *dst.add(out) = encode(cp);
+                *dst.add(out) = wide_to_cp1252(cp);
                 pos += 4;
             }
             out += 1;
         }
         out
     }
+}
+
+/// JS5 group and file name hash.
+pub fn hash32(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for b in s.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(b as i32);
+    }
+    h
 }

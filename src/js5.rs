@@ -1,9 +1,10 @@
-//! RuneScape cache stores, JS5 containers and reference tables.
+//! RuneScape cache stores, JS5 containers and indexes.
 
 use crate::Packet;
 use crate::crc::getcrc;
 use crate::gz::gz_decompress;
-use compression::{decompress_owned, decompress_xtea};
+use compression::{decompress_owned, decompress_tiny_key};
+use index::Js5Index;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -14,7 +15,7 @@ use thiserror::Error;
 use tracing::{debug, trace, warn};
 
 pub mod compression;
-pub mod reference;
+pub mod index;
 
 /// Cache error types
 #[derive(Error, Debug)]
@@ -35,7 +36,7 @@ pub enum CacheError {
     Decompression(String),
 
     #[error("XTEA decryption failed")]
-    XteaDecryption,
+    TinyKeyDecryption,
 
     #[error("CRC32 mismatch: expected {expected}, got {actual}")]
     CrcMismatch { expected: u32, actual: u32 },
@@ -43,10 +44,10 @@ pub enum CacheError {
 
 pub type Result<T> = std::result::Result<T, CacheError>;
 
-pub struct Js5Store {
+pub struct Js5LocalCache {
     data_file: File,
     index_files: HashMap<u8, IndexFile>,
-    reference_tables: HashMap<u8, reference::ReferenceTable>,
+    indexes: HashMap<u8, Js5Index>,
     legacy: bool,
 }
 
@@ -83,7 +84,7 @@ impl Entry {
     }
 }
 
-impl Js5Store {
+impl Js5LocalCache {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let legacy = !path.join("main_file_cache.dat2").exists();
@@ -114,11 +115,11 @@ impl Js5Store {
         let mut store = Self {
             data_file,
             index_files,
-            reference_tables: HashMap::new(),
+            indexes: HashMap::new(),
             legacy,
         };
         if !legacy {
-            store.load_reference_tables()?;
+            store.load_indexes()?;
         }
         Ok(store)
     }
@@ -144,33 +145,27 @@ impl Js5Store {
         Self::open(path)
     }
 
-    /// Load all reference tables from index 255
-    fn load_reference_tables(&mut self) -> Result<()> {
-        // Index 255 contains reference tables for other archives
+    /// Load all indexes from index 255
+    fn load_indexes(&mut self) -> Result<()> {
+        // Index 255 contains indexes for other archives
         for archive_id in 0..=255u8 {
             match self.read_group(255, archive_id as u32) {
                 Ok(Some(group)) => {
                     if let Some(entry) = group.entries.first() {
-                        match reference::parse_reference_table(entry.data()) {
+                        match index::load_index(entry.data()) {
                             Ok(table) => {
-                                self.reference_tables.insert(archive_id, table);
-                                debug!("Loaded reference table for archive {}", archive_id);
+                                self.indexes.insert(archive_id, table);
+                                debug!("Loaded index for archive {}", archive_id);
                             }
                             Err(e) => {
-                                trace!(
-                                    "Could not parse reference table for archive {}: {}",
-                                    archive_id, e
-                                );
+                                trace!("Could not parse index for archive {}: {}", archive_id, e);
                             }
                         }
                     }
                 }
                 Ok(None) => {} // Group doesn't exist
                 Err(e) => {
-                    trace!(
-                        "Could not read reference table for archive {}: {}",
-                        archive_id, e
-                    );
+                    trace!("Could not read index for archive {}: {}", archive_id, e);
                 }
             }
         }
@@ -228,15 +223,15 @@ impl Js5Store {
         Ok(Some(data))
     }
 
-    /// Read and decompress a group from the cache, splitting into entries using the reference table
+    /// Read and decompress a group from the cache, splitting into entries using the index
     pub fn read_group(&mut self, archive_id: u8, group_id: u32) -> Result<Option<Group>> {
         let Some(decompressed) = self.read_group_raw_decompressed(archive_id, group_id)? else {
             return Ok(None);
         };
         let size = decompressed.len();
 
-        // Look up group info from reference table
-        let group_info = self.reference_tables.get(&archive_id).and_then(|rt| {
+        // Look up group info from index
+        let group_info = self.indexes.get(&archive_id).and_then(|rt| {
             rt.groups
                 .binary_search_by_key(&group_id, |group| group.id)
                 .ok()
@@ -256,8 +251,8 @@ impl Js5Store {
                     range: 0..size,
                 }]
             } else {
-                // Multi-file: split using stripe format
-                split_group_entries(decompressed, &info.files)
+                // Multi-file: split using chunk format
+                unpack_group_data(decompressed, &info.files)
             };
             (
                 info.name_hash,
@@ -267,7 +262,7 @@ impl Js5Store {
                 entries,
             )
         } else {
-            // No reference table - return as single entry
+            // No index - return as single entry
             let entries = vec![Entry {
                 id: 0,
                 name_hash: -1,
@@ -289,7 +284,7 @@ impl Js5Store {
     }
 
     /// Get the number of groups in an archive
-    pub fn group_count(&self, archive_id: u8) -> Option<u32> {
+    pub fn group_id_limit(&self, archive_id: u8) -> Option<u32> {
         self.index_files
             .get(&archive_id)
             .map(|idx| (idx.data.len() / 6) as u32)
@@ -300,9 +295,9 @@ impl Js5Store {
         self.index_files.contains_key(&archive_id)
     }
 
-    /// Get the reference table for an archive
-    pub fn reference_table(&self, archive_id: u8) -> Option<&reference::ReferenceTable> {
-        self.reference_tables.get(&archive_id)
+    /// Get the index for an archive
+    pub fn index(&self, archive_id: u8) -> Option<&Js5Index> {
+        self.indexes.get(&archive_id)
     }
 
     /// Read and decompress a group, returning the raw decompressed bytes (before entry splitting).
@@ -382,7 +377,7 @@ impl Js5Store {
     /// writes to dat2, and updates idx.
     ///
     /// Returns the CRC32 of the compressed data (excluding the version suffix),
-    /// which is what the reference table expects.
+    /// which is what the index expects.
     pub fn write_group(
         &mut self,
         archive_id: u8,
@@ -401,36 +396,32 @@ impl Js5Store {
         Ok(crc)
     }
 
-    /// Reference tables carry their version in the body, with no group version suffix.
-    pub fn write_reference_table(
-        &mut self,
-        archive_id: u8,
-        table: &reference::ReferenceTable,
-    ) -> Result<()> {
-        let encoded = reference::encode_reference_table(table);
+    /// Indexes carry their version in the body, with no group version suffix.
+    pub fn write_index(&mut self, archive_id: u8, table: &Js5Index) -> Result<()> {
+        let encoded = index::encode_index(table);
         let compressed = compression::compress_best(&encoded, true, true, None)?;
         // No version suffix for archive 255 entries.
         self.write_raw_group(255, archive_id as u32, &compressed)?;
         // Update our in-memory copy
-        self.reference_tables.insert(archive_id, table.clone());
+        self.indexes.insert(archive_id, table.clone());
         Ok(())
     }
 
-    /// Write a raw (already-compressed) reference table to archive 255
+    /// Write a raw (already-compressed) index to archive 255
     /// and update the in-memory cache. Use this for passthrough where
     /// you already have the exact bytes from the source cache.
-    pub fn write_reference_table_raw(
+    pub fn write_index_raw(
         &mut self,
         archive_id: u8,
         raw_compressed: &[u8],
-        table: reference::ReferenceTable,
+        table: Js5Index,
     ) -> Result<()> {
         self.write_raw_group(255, archive_id as u32, raw_compressed)?;
-        self.reference_tables.insert(archive_id, table);
+        self.indexes.insert(archive_id, table);
         Ok(())
     }
 
-    pub fn read_group_xtea(
+    pub fn read_group_tiny_key(
         &mut self,
         archive_id: u8,
         group_id: u32,
@@ -443,34 +434,34 @@ impl Js5Store {
         if *keys == [0; 4] {
             return Ok(Some(decompress_owned(raw)?));
         }
-        Ok(Some(decompress_xtea(&raw, keys)?))
+        Ok(Some(decompress_tiny_key(&raw, keys)?))
     }
 }
 
-/// Split a multi-file group's decompressed data into individual entries using the JS5 stripe format.
+/// Split a multi-file group's decompressed data into individual entries using the JS5 chunk format.
 ///
 /// The trailer at the end of the data contains:
-/// - `num_stripes * file_count` big-endian i32 delta-encoded chunk sizes
-///   (row-major: stripe 0 all files, stripe 1 all files, ...)
-///   Each value is delta-encoded: actual_size = running_sum_per_stripe += read_i32()
-/// - 1 byte: num_stripes
+/// - `chunk_count * file_count` big-endian i32 delta-encoded piece sizes
+///   (row-major: chunk 0 all files, chunk 1 all files, ...)
+///   Each value is delta-encoded: actual_size = running_sum_per_chunk += read_i32()
+/// - 1 byte: chunk_count
 ///
-/// Data body is laid out as sequential stripes, each stripe containing one chunk per file in order.
+/// Data body is laid out as sequential chunks, each chunk containing one piece per file in order.
 ///
-/// Public so a group obtained from somewhere other than a local `Js5Store`
+/// Public so a group obtained from somewhere other than a local `Js5LocalCache`
 /// -- an archive server, say -- can be split with the same code the cache
-/// reader uses. The stripe layout is fiddly enough that a second
+/// reader uses. The chunk layout is fiddly enough that a second
 /// implementation would be a second set of bugs.
-pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<Entry> {
+pub fn unpack_group_data(data: Vec<u8>, files: &[index::FileInfo]) -> Vec<Entry> {
     let file_count = files.len();
     if data.is_empty() || file_count == 0 {
         return vec![];
     }
 
-    let num_stripes = data[data.len() - 1] as usize;
-    let trailer_size = 1 + num_stripes * file_count * 4;
+    let chunk_count = data[data.len() - 1] as usize;
+    let trailer_size = 1 + chunk_count * file_count * 4;
 
-    if num_stripes == 0 || data.len() < trailer_size {
+    if chunk_count == 0 || data.len() < trailer_size {
         // Fallback: return all data as the single (first) file
         return vec![Entry {
             id: files[0].id,
@@ -483,7 +474,7 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
     let body_len = data.len() - trailer_size;
     let mut trailer = Packet::from(&data[body_len..]);
     let mut sizes = vec![0usize; file_count];
-    for _ in 0..num_stripes {
+    for _ in 0..chunk_count {
         let mut len: i32 = 0;
         for size in &mut sizes {
             len += trailer.g4s();
@@ -492,7 +483,7 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
     }
 
     let mut pos = 0;
-    if num_stripes == 1 {
+    if chunk_count == 1 {
         let data = Arc::new(data);
         return files
             .iter()
@@ -504,7 +495,7 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
                 let range = if pos <= body_len {
                     start..pos
                 } else {
-                    warn!("Chunk out of bounds: file={}, stripe=0", index);
+                    warn!("Piece out of bounds: file={}, chunk=0", index);
                     0..0
                 };
                 Entry {
@@ -528,7 +519,7 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
         .collect();
     let mut output = vec![0; total];
     trailer.pos = 0;
-    for stripe in 0..num_stripes {
+    for chunk in 0..chunk_count {
         let mut len: i32 = 0;
         for (index, range) in ranges.iter_mut().enumerate() {
             len += trailer.g4s();
@@ -538,7 +529,7 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
                 output[range.end..range.end + size].copy_from_slice(&data[pos..end]);
                 range.end += size;
             } else {
-                warn!("Chunk out of bounds: file={}, stripe={}", index, stripe);
+                warn!("Piece out of bounds: file={}, chunk={}", index, chunk);
             }
             pos = end;
         }
@@ -556,10 +547,10 @@ pub fn split_group_entries(data: Vec<u8>, files: &[reference::FileInfo]) -> Vec<
         .collect()
 }
 
-/// Encode multiple file entries into a single group blob using the JS5 stripe format.
+/// Encode multiple file entries into a single group blob using the JS5 chunk format.
 ///
 /// Each entry is `(file_id, data)`. For single-entry groups, returns the
-/// data directly (no trailer). For multi-entry groups, produces a 1-stripe layout.
+/// data directly (no trailer). For multi-entry groups, produces a 1-chunk layout.
 pub fn encode_group_entries(entries: &[(u32, &[u8])]) -> Vec<u8> {
     if entries.is_empty() {
         return vec![];
@@ -583,14 +574,14 @@ pub fn encode_group_entries(entries: &[(u32, &[u8])]) -> Vec<u8> {
     out.data
 }
 
-/// Encode with a custom stripe splitter.
+/// Encode with a custom chunk splitter.
 ///
-/// `split_fn(entry_data, stripe_count) -> Vec<Vec<u8>>` splits each entry
-/// into `stripe_count` chunks. The body interleaves all entries' chunk 0,
-/// then all entries' chunk 1, etc.
-pub fn encode_group_entries_striped(
+/// `split_fn(entry_data, chunk_count) -> Vec<Vec<u8>>` splits each entry
+/// into `chunk_count` pieces. The body interleaves all entries' piece 0,
+/// then all entries' piece 1, etc.
+pub fn encode_group_entries_chunked(
     entries: &[(u32, &[u8])],
-    num_stripes: u8,
+    chunk_count: u8,
     split_fn: impl Fn(&[u8], u8) -> Vec<Vec<u8>>,
 ) -> Vec<u8> {
     if entries.is_empty() {
@@ -600,46 +591,46 @@ pub fn encode_group_entries_striped(
         return entries[0].1.to_vec();
     }
 
-    let ns = num_stripes as usize;
+    let ns = chunk_count as usize;
 
-    // Split each entry into stripes
+    // Split each entry into chunks
     let split: Vec<Vec<Vec<u8>>> = entries
         .iter()
-        .map(|(_, data)| split_fn(data, num_stripes))
+        .map(|(_, data)| split_fn(data, chunk_count))
         .collect();
 
-    // Interleave: body = [all stripe 0 chunks][all stripe 1 chunks]...
+    // Interleave: body = [all chunk 0 pieces][all chunk 1 pieces]...
     let size: usize = split
         .iter()
-        .flat_map(|chunks| &chunks[..ns])
+        .flat_map(|pieces| &pieces[..ns])
         .map(Vec::len)
         .sum();
     let mut body = Vec::with_capacity(size + ns * entries.len() * 4 + 1);
     for s in 0..ns {
-        for entry_chunks in &split {
-            body.extend_from_slice(&entry_chunks[s]);
+        for entry_pieces in &split {
+            body.extend_from_slice(&entry_pieces[s]);
         }
     }
 
-    // Trailer: delta-encoded sizes per stripe, then num_stripes byte
+    // Trailer: delta-encoded sizes per chunk, then chunk_count byte
     let pos = body.len();
     body.resize(pos + ns * entries.len() * 4 + 1, 0);
     let mut trailer = Packet::from(&mut body[pos..]);
     for s in 0..ns {
         let mut prev: i32 = 0;
-        for entry_chunks in &split {
-            let size = entry_chunks[s].len() as i32;
+        for entry_pieces in &split {
+            let size = entry_pieces[s].len() as i32;
             trailer.p4(size - prev);
             prev = size;
         }
     }
-    trailer.p1(num_stripes);
+    trailer.p1(chunk_count);
     body
 }
 
 /// Detect the number of files in a group blob by parsing its entry footer.
 ///
-/// Multi-entry groups end with `[delta_sizes: file_count * num_stripes * 4 bytes] [num_stripes: u8]`.
+/// Multi-entry groups end with `[delta_sizes: file_count * chunk_count * 4 bytes] [chunk_count: u8]`.
 /// Single-entry groups have no footer (the blob IS the data).
 ///
 /// Returns 1 for single-entry blobs, or the detected file_count for multi-entry blobs.
@@ -647,16 +638,16 @@ pub fn detect_file_count(blob: &[u8]) -> u32 {
     if blob.is_empty() {
         return 1;
     }
-    let num_stripes = blob[blob.len() - 1] as usize;
-    if num_stripes == 0 {
+    let chunk_count = blob[blob.len() - 1] as usize;
+    if chunk_count == 0 {
         return 1;
     }
     // Try candidate file_counts from 2 upward.
-    // trailer = file_count * num_stripes * 4 + 1
+    // trailer = file_count * chunk_count * 4 + 1
     // body = blob.len() - trailer
-    // The accumulated deltas (per stripe) must sum to body length.
+    // The accumulated deltas (per chunk) must sum to body length.
     for fc in 2u32..=4096 {
-        let trailer_len = fc as usize * num_stripes * 4 + 1;
+        let trailer_len = fc as usize * chunk_count * 4 + 1;
         if trailer_len >= blob.len() {
             break;
         }
@@ -665,10 +656,10 @@ pub fn detect_file_count(blob: &[u8]) -> u32 {
 
         let mut total_size: i64 = 0;
         let mut valid = true;
-        for stripe in 0..num_stripes {
+        for chunk in 0..chunk_count {
             let mut prev: i32 = 0;
             for file in 0..fc as usize {
-                let off = trailer_start + (stripe * fc as usize + file) * 4;
+                let off = trailer_start + (chunk * fc as usize + file) * 4;
                 let delta = Packet::from(&blob[off..off + 4]).g4s();
                 prev = prev.wrapping_add(delta);
                 if prev < 0 {
@@ -688,18 +679,9 @@ pub fn detect_file_count(blob: &[u8]) -> u32 {
     1
 }
 
-/// Compute CRC32 of a group's raw compressed bytes (for reference table updates).
+/// Compute CRC32 of a group's raw compressed bytes (for index updates).
 pub fn compute_group_crc(raw_compressed: &[u8]) -> u32 {
     getcrc(raw_compressed, 0, raw_compressed.len()) as u32
-}
-
-/// Compute Java's String.hashCode() (same as RS2 name hash algorithm).
-pub fn java_string_hash(s: &str) -> i32 {
-    let mut h: i32 = 0;
-    for b in s.bytes() {
-        h = h.wrapping_mul(31).wrapping_add(b as i32);
-    }
-    h
 }
 
 #[cfg(test)]
@@ -708,17 +690,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn stripe_layout_preserves_order_empty_chunks_and_negative_deltas() {
+    fn chunk_layout_preserves_order_empty_chunks_and_negative_deltas() {
         let files = [
-            reference::FileInfo {
+            index::FileInfo {
                 id: 2,
                 name_hash: Some(10),
             },
-            reference::FileInfo {
+            index::FileInfo {
                 id: 5,
                 name_hash: None,
             },
-            reference::FileInfo {
+            index::FileInfo {
                 id: 9,
                 name_hash: Some(20),
             },
@@ -729,7 +711,7 @@ mod tests {
             one,
         );
         let ptr = one.as_ptr();
-        let entries = split_group_entries(one, &files);
+        let entries = unpack_group_data(one, &files);
         for (entry, (id, name, data)) in
             entries
                 .iter()
@@ -746,7 +728,7 @@ mod tests {
         assert_eq!(retained.data(), b"xyz");
 
         let two = b"abCdefGHi\x00\x00\x00\x02\xff\xff\xff\xfe\x00\x00\x00\x01\x00\x00\x00\x03\xff\xff\xff\xff\xff\xff\xff\xff\x02".to_vec();
-        let entries = split_group_entries(two, &files);
+        let entries = unpack_group_data(two, &files);
         for (entry, expected) in entries.iter().zip([b"abdef".as_slice(), b"GH", b"Ci"]) {
             assert_eq!(entry.data(), expected);
         }
@@ -782,7 +764,7 @@ mod tests {
         .unwrap();
         fs::write(path.join("main_file_cache.idx1"), []).unwrap();
         {
-            let mut store = Js5Store::open(&path).unwrap();
+            let mut store = Js5LocalCache::open(&path).unwrap();
             assert_eq!(store.read_raw_group_bytes(0, 1).unwrap().unwrap(), data);
             let mut compressed = crate::gz::gz_compress(&data);
             compressed.extend_from_slice(&7u16.to_be_bytes());
@@ -792,21 +774,21 @@ mod tests {
                 data
             );
             store.write_raw_group(0, 4, &data).unwrap();
-            assert_eq!(store.group_count(0), Some(5));
+            assert_eq!(store.group_id_limit(0), Some(5));
             assert_eq!(store.read_raw_group_bytes(0, 4).unwrap().unwrap(), data);
         }
         let modern = path.join("modern");
         {
-            let mut store = Js5Store::create(&modern, &[1]).unwrap();
+            let mut store = Js5LocalCache::create(&modern, &[1]).unwrap();
             for group in [0, 7, 65536] {
                 store.write_raw_group(1, group, &data).unwrap();
-                assert_eq!(store.group_count(1), Some(group + 1));
+                assert_eq!(store.group_id_limit(1), Some(group + 1));
                 assert_eq!(store.read_raw_group_bytes(1, group).unwrap().unwrap(), data);
             }
             assert!(store.read_raw_group_bytes(1, 1).unwrap().is_none());
         }
         {
-            let mut store = Js5Store::open(&modern).unwrap();
+            let mut store = Js5LocalCache::open(&modern).unwrap();
             assert_eq!(store.read_raw_group_bytes(1, 65536).unwrap().unwrap(), data);
             let end = store.data_file.metadata().unwrap().len();
             store.data_file.set_len(end - 520 + 10 + 10).unwrap();
@@ -816,7 +798,7 @@ mod tests {
                 store.read_raw_group_bytes(1, 7).unwrap().unwrap(),
                 b"replacement"[..]
             );
-            assert_eq!(store.group_count(1), Some(65537));
+            assert_eq!(store.group_id_limit(1), Some(65537));
             // The first group spans sectors 1-3; corrupt one header field at a time.
             for (offset, original) in [(520 + 1, 0), (520 + 3, 0), (520 + 7, 1), (1040 + 3, 1)] {
                 store.data_file.seek(SeekFrom::Start(offset)).unwrap();

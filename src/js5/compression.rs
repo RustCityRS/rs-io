@@ -3,7 +3,7 @@ use crate::Packet;
 use crate::bz2::{bz2_compress, bz2_decompress};
 use crate::crc::getcrc;
 use crate::gz::{gz_compress_with, gz_decompress};
-use rs_crypto::xtea::Xtea;
+use rs_crypto::tinykey::TinyKey;
 use std::borrow::Cow;
 use std::io::Cursor;
 
@@ -142,18 +142,18 @@ pub fn compress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
     Ok(out.data)
 }
 
-pub fn decompress_xtea(raw: &[u8], keys: &[i32; 4]) -> Result<Vec<u8>> {
+pub fn decompress_tiny_key(raw: &[u8], keys: &[i32; 4]) -> Result<Vec<u8>> {
     if *keys == [0; 4] {
         return decompress(raw).map(Cow::into_owned);
     }
     let mut data = Container::parse(raw)?.data.to_vec();
     let end = 5 + ((data.len() - 5) & !7);
-    Xtea::decrypt(&mut data[5..end], &keys.map(|k| k as u32))
-        .map_err(|_| CacheError::XteaDecryption)?;
+    TinyKey::decrypt(&mut data[5..end], &keys.map(|k| k as u32))
+        .map_err(|_| CacheError::TinyKeyDecryption)?;
     decompress_owned(data)
 }
 
-pub fn compress_xtea(
+pub fn compress_tiny_key(
     data: &[u8],
     compression: CompressionType,
     version: u16,
@@ -162,8 +162,8 @@ pub fn compress_xtea(
     let mut out = compress(data, compression)?;
     if *keys != [0; 4] {
         let end = 5 + ((out.len() - 5) & !7);
-        Xtea::encrypt(&mut out[5..end], &keys.map(|k| k as u32))
-            .map_err(|_| CacheError::XteaDecryption)?;
+        TinyKey::encrypt(&mut out[5..end], &keys.map(|k| k as u32))
+            .map_err(|_| CacheError::TinyKeyDecryption)?;
     }
     let pos = out.len();
     out.resize(pos + 2, 0);
@@ -285,11 +285,11 @@ mod tests {
         ] {
             for len in [0, 1, 6, 7, 8, 9, 15, 16, 17, 511] {
                 let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
-                let raw = compress_xtea(&data, codec, 0x1234, &keys).unwrap();
+                let raw = compress_tiny_key(&data, codec, 0x1234, &keys).unwrap();
                 let c = Container::parse(&raw).unwrap();
                 assert_eq!(c.version, Some(0x1234));
                 for bytes in [&raw[..], c.data] {
-                    assert_eq!(&decompress_xtea(bytes, &keys).unwrap()[..], data);
+                    assert_eq!(&decompress_tiny_key(bytes, &keys).unwrap()[..], data);
                 }
             }
         }
@@ -351,16 +351,16 @@ mod tests {
         }
     }
 
-    /// Test that compressing real cache data from archive 2 reference table
+    /// Test that compressing real cache data from archive 2 index
     /// produces a valid container that decompresses back.
     #[test]
-    fn test_compress_real_reference_table() {
+    fn test_compress_real_index() {
         let cache_dir = std::path::Path::new("../cache");
         if !cache_dir.exists() {
             eprintln!("Skipping (no cache)");
             return;
         }
-        let mut store = crate::js5::Js5Store::open(cache_dir).unwrap();
+        let mut store = crate::js5::Js5LocalCache::open(cache_dir).unwrap();
         let raw = store.read_group_raw_decompressed(255, 2).unwrap().unwrap();
 
         // Re-compress with gzip
