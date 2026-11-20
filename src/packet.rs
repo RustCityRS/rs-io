@@ -479,7 +479,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     #[inline(always)]
     pub fn pjstr2(&mut self, str: &str, terminator: u8) {
-        self.p1(0);
+        self.p1(terminator);
         self.pjstr(str, terminator);
     }
 

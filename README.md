@@ -129,7 +129,7 @@ All write methods advance `pos` by the number of bytes written.
 | `p4_alt1(i32)`           | 4     | Little-endian      | Signed 32-bit             |
 | `p8(i64)`                | 8     | Big-endian         | Signed 64-bit             |
 | `pjstr(&str, u8)`        | var   | UTF-8 + terminator | Null/10-terminated string |
-| `pjstr2(&str, u8)`       | var   | 0, UTF-8 + term.   | Version-byte string       |
+| `pjstr2(&str, u8)`       | var   | term, UTF-8, term  | Terminator both sides     |
 | `pdata(&[u8], off, len)` | var   | Raw copy           | Bulk data write           |
 
 ### Read Operations
