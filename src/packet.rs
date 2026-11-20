@@ -34,6 +34,11 @@ impl Packet {
         }
     }
 
+    #[inline]
+    pub fn sizejstr2(value: &str) -> usize {
+        Self::sizejstr(value) + 1
+    }
+
     pub fn new(len: usize) -> Packet {
         Packet {
             data: vec![0; len],
@@ -473,6 +478,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
+    pub fn pjstr2(&mut self, str: &str) {
+        self.p1(0);
+        self.pjstr(str, 0);
+    }
+
+    #[inline(always)]
     pub fn psmart1or2(&mut self, value: i32) {
         if (0..128).contains(&value) {
             self.p1(value as u8);
@@ -800,6 +811,15 @@ mod tests {
         packet.pjstr(str, 0);
         packet.pos = 0; // Resetting the packet for showing test case.
         assert_eq!(str, packet.gjstr(0));
+    }
+
+    #[test]
+    fn test_pjstr2() {
+        let str: &str = "Caf\u{e9}";
+        let mut packet: Packet = Packet::new(Packet::sizejstr2(str));
+        packet.pjstr2(str);
+        assert_eq!(packet.pos, packet.data.len());
+        assert_eq!(packet.data, [0, b'C', b'a', b'f', 0xe9, 0]);
     }
 
     #[test]
