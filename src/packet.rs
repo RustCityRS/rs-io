@@ -478,9 +478,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline(always)]
-    pub fn pjstr2(&mut self, str: &str) {
+    pub fn pjstr2(&mut self, str: &str, terminator: u8) {
         self.p1(0);
-        self.pjstr(str, 0);
+        self.pjstr(str, terminator);
     }
 
     #[inline(always)]
@@ -817,7 +817,7 @@ mod tests {
     fn test_pjstr2() {
         let str: &str = "Caf\u{e9}";
         let mut packet: Packet = Packet::new(Packet::sizejstr2(str));
-        packet.pjstr2(str);
+        packet.pjstr2(str, 0);
         assert_eq!(packet.pos, packet.data.len());
         assert_eq!(packet.data, [0, b'C', b'a', b'f', 0xe9, 0]);
     }
